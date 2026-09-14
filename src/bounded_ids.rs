@@ -56,8 +56,9 @@ pub(crate) static TABLES: LazyLock<BoundedIds> = LazyLock::new(|| {
         std::array::from_fn(|p| id(format!("{}{key}", PREFIXES[p])))
     };
     const CLASSES: [&str; 3] = ["all_digits", "some_digits", "no_digits"];
-    let digits: [[Option<u32>; 3]; 3] =
-        std::array::from_fn(|p| std::array::from_fn(|c| id(format!("{}digits:{}", PREFIXES[p], CLASSES[c]))));
+    let digits: [[Option<u32>; 3]; 3] = std::array::from_fn(|p| {
+        std::array::from_fn(|c| id(format!("{}digits:{}", PREFIXES[p], CLASSES[c])))
+    });
     let length: [[Vec<Option<u32>>; 2]; 3] = std::array::from_fn(|p| {
         let for_type = |type_char: char| -> Vec<Option<u32>> {
             (0..=MAX_LENGTH)
@@ -130,13 +131,22 @@ impl BoundedIds {
     /// `None` -> out of range, caller must fall back to the slow path.
     /// `Some(inner)` -> in range; `inner` is the (possibly absent) id.
     #[inline]
-    pub(crate) fn length_id(&self, prefix: usize, is_word: bool, count: usize) -> Option<Option<u32>> {
+    pub(crate) fn length_id(
+        &self,
+        prefix: usize,
+        is_word: bool,
+        count: usize,
+    ) -> Option<Option<u32>> {
         self.length[prefix][is_word as usize].get(count).copied()
     }
 
     /// Same in-range/out-of-range shape as `length_id`.
     #[inline]
-    pub(crate) fn trailing_zeros_some_id(&self, prefix: usize, zero_count: usize) -> Option<Option<u32>> {
+    pub(crate) fn trailing_zeros_some_id(
+        &self,
+        prefix: usize,
+        zero_count: usize,
+    ) -> Option<Option<u32>> {
         self.trailing_zeros_some[prefix].get(zero_count).copied()
     }
 }

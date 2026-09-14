@@ -14,7 +14,7 @@ use polars_core::chunked_array::builder::list::AnonymousOwnedListBuilder;
 use pyo3_polars::derive::polars_expr;
 use rayon::prelude::*;
 
-use crate::{Error, Parser, LABELS};
+use crate::{Error, LABELS, Parser};
 
 fn new_worker_parser() -> Parser {
     Parser::new().expect("embedded CRF model already validated to load")
@@ -116,6 +116,10 @@ fn tag_confidence_output(_: &[Field]) -> PolarsResult<Field> {
     Ok(Field::new("address".into(), DataType::Struct(fields)))
 }
 
+/// One row's result from `tag_with_confidence`: components, address type,
+/// sequence confidence.
+type ConfidentTagRow = (HashMap<String, String>, &'static str, f64);
+
 /// Like [`tag_address`], with one extra `sequence_confidence` field: the
 /// CRF's confidence in the whole label sequence for that row, not per
 /// component (see [`parse_address_with_confidence`] for per-token
@@ -128,13 +132,13 @@ fn tag_address_with_confidence(inputs: &[Series]) -> PolarsResult<Series> {
 
     Parser::new().map_err(|e| polars_err!(ComputeError: "failed to load address model: {e}"))?;
 
-    let tagged: Vec<Option<(HashMap<String, String>, &'static str, f64)>> = ca
+    let tagged: Vec<Option<ConfidentTagRow>> = ca
         .iter()
         .collect::<Vec<_>>()
         .into_par_iter()
         .map_init(
             new_worker_parser,
-            |parser, opt| -> PolarsResult<Option<(HashMap<String, String>, &'static str, f64)>> {
+            |parser, opt| -> PolarsResult<Option<ConfidentTagRow>> {
                 match opt {
                     None => Ok(None),
                     Some(s) => match parser.tag_with_confidence(s) {
@@ -198,7 +202,10 @@ fn parse_output(_: &[Field]) -> PolarsResult<Field> {
         Field::new("token".into(), DataType::String),
         Field::new("label".into(), DataType::String),
     ]);
-    Ok(Field::new("address".into(), DataType::List(Box::new(inner))))
+    Ok(Field::new(
+        "address".into(),
+        DataType::List(Box::new(inner)),
+    ))
 }
 
 /// Raw per-token labelling, preserving order and repetition.
@@ -284,7 +291,10 @@ fn parse_confidence_output(_: &[Field]) -> PolarsResult<Field> {
         Field::new("label".into(), DataType::String),
         Field::new("confidence".into(), DataType::Float64),
     ]);
-    Ok(Field::new("address".into(), DataType::List(Box::new(inner))))
+    Ok(Field::new(
+        "address".into(),
+        DataType::List(Box::new(inner)),
+    ))
 }
 
 /// Like [`parse_address`], but each token also carries the CRF's marginal

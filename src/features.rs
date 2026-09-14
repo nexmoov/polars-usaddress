@@ -3,10 +3,10 @@
 //! tagger (recovered from the reference implementation, not documented
 //! upstream):
 //!
-//! * string value  -> attribute named `key:value`, weight 1.0
-//! * bool value    -> attribute named `key`, weight 1.0 if true, **0.0 if false**
-//!                    (emitted either way -- not omitted)
-//! * nested dict   -> every child attribute prefixed with `parent:`
+//! * string value -> attribute named `key:value`, weight 1.0
+//! * bool value -> attribute named `key`, weight 1.0 if true, **0.0 if false**
+//!   (emitted either way -- not omitted)
+//! * nested dict -> every child attribute prefixed with `parent:`
 //!
 //! An empty string value still produces the colon, e.g. `trailing.zeros:`.
 //! Getting any of this subtly wrong does not error; it silently degrades the
@@ -26,6 +26,11 @@ use crate::lexicon::{DIRECTIONS, STREET_NAMES};
 const SKIP_ZERO_WEIGHT_ATTRS: bool = false;
 
 /// Which of the three enumerable digit classes a token falls into.
+///
+/// Named to match upstream's `"all_digits"`/`"some_digits"`/`"no_digits"`
+/// string values exactly, not for its own sake -- hence the shared suffix
+/// clippy would otherwise ask to drop.
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DigitsClass {
     AllDigits,
@@ -417,10 +422,11 @@ mod tests {
     #[test]
     fn nesting_is_not_recursive() {
         let seq = tokens_to_features(&["123", "Main", "St"]);
-        assert!(!seq
-            .iter()
-            .flatten()
-            .any(|a| a.name.contains("next:next:") || a.name.contains("previous:previous:")));
+        assert!(
+            !seq.iter()
+                .flatten()
+                .any(|a| a.name.contains("next:next:") || a.name.contains("previous:previous:"))
+        );
     }
 
     /// `tokens_to_id_features` must match `tokens_to_features` resolved
@@ -440,8 +446,8 @@ mod tests {
         struct Fixtures {
             fixtures: Vec<Case>,
         }
-        let fixtures: Fixtures =
-            serde_json::from_str(include_str!("../tests/fixtures.json")).expect("fixtures.json parses");
+        let fixtures: Fixtures = serde_json::from_str(include_str!("../tests/fixtures.json"))
+            .expect("fixtures.json parses");
 
         let mut checked_any = false;
         for case in &fixtures.fixtures {
@@ -471,6 +477,9 @@ mod tests {
                 case.input
             );
         }
-        assert!(checked_any, "fixtures.json produced no non-empty token sequences");
+        assert!(
+            checked_any,
+            "fixtures.json produced no non-empty token sequences"
+        );
     }
 }

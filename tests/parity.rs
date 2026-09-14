@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use polars_usaddress::{parse, tag, AddressType, Parser};
+use polars_usaddress::{AddressType, Parser, parse, tag};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
