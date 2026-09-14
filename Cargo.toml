@@ -1,0 +1,41 @@
+[package]
+name = "polars-usaddress"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+description = "US address parsing for Polars, ported from DataMade's usaddress"
+
+# Required for a Polars plugin: `cdylib` is what Polars dlopen's at runtime,
+# `rlib` is what `tests/parity.rs` links against.
+[lib]
+name = "polars_usaddress"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["polars-plugin"]
+polars-plugin = ["dep:polars", "dep:polars-core", "dep:pyo3", "dep:pyo3-polars", "dep:rayon"]
+bench-timing = []
+
+[dependencies]
+crfs = { path = "vendor/crfs" }  # Vendored fork (see vendor/crfs/VENDORED.md) instead of crates.io crfs = "0.4"
+phf = { version = "0.11", features = ["macros"] }
+regex = "1"
+thiserror = "2"
+rustc-hash = "2"
+
+polars = { version = "0.55", features = ["dtype-struct"], default-features = false, optional = true }
+polars-core = { version = "0.55", default-features = false, optional = true }
+pyo3 = { version = "0.29", features = ["extension-module", "abi3-py39"], optional = true }
+pyo3-polars = { version = "0.28", features = ["derive"], optional = true }
+
+rayon = { version = "1.9", optional = true }
+
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1

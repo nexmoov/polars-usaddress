@@ -1,0 +1,23 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "polars-usaddress"
+version = "0.1.0"
+description = "US address parsing for Polars, ported from DataMade's usaddress"
+requires-python = ">=3.11"
+dependencies = [
+    "polars>=1.44.2",
+]
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+module-name = "polars_usaddress._internal"
+python-source = "python"
+
+[dependency-groups]
+dev = [
+    "jupyterlab>=4.6.3",
+    "usaddress>=0.5.16",
+]
