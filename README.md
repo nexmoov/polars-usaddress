@@ -8,7 +8,25 @@ Python wheel, embedded at compile time. Only the tokenizer and feature
 extraction are reimplemented; inference runs through [`crfs`][crfs], a pure-Rust
 implementation of the CRFsuite format.
 
-Pinned to **usaddress 0.5.16**.
+The CRF inference engine (vendor/crfs) is vendored from [vinvomero/fastaddress](https://github.com/vinvomero/fastaddress) 's fork of crfs-rs — 
+its pre-decoded model tables, id-based tag_ids tagging path, and forward-backward marginals are what make this port 
+fast and confidence-aware, and the parse_with_confidence/tag_with_confidence API here mirrors fastaddress's own.
+Credit to the fastaddress author for the performance work; this mostly adds the Polars plugin layer.
+
+## How this was built
+
+This was built with extensive AI assistance (Claude), by someone fluent in
+Python and Polars, but novice to Rust. The parts in
+`src/` (tokenizing, feature extraction, the Polars glue) are things flansbreezy can
+walk through and explain. The CRF math itself — Viterbi decoding, forward-backward marginals,
+in `vendor/crfs` — is vendored, not authored, and honestly opaque to the devs the
+way most people's dependencies are: I don't understand crfsuite's internals,
+
+The outputs are tested by:
+- A differential test against real Python `usaddress` (`tools/verify_model.py`, 4,034 addresses, 0 mismatches) 
+- An exhaustive equivalence test between this crate's two feature-extraction paths (`id_features_match_string_features_exactly` in `src/features.rs`)
+
+If something looks wrong, issues and contributions are very welcome.
 
 ## Usage
 
