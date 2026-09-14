@@ -19,5 +19,6 @@ python-source = "python"
 [dependency-groups]
 dev = [
     "jupyterlab>=4.6.3",
+    "plotly>=7.0.0",
     "usaddress>=0.5.16",
 ]
