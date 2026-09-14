@@ -42,8 +42,13 @@ fn fallback_corpus(n: usize) -> Vec<String> {
         .map(|c| c.input)
         .filter(|s| !s.trim().is_empty())
         .collect();
-    assert!(!addresses.is_empty(), "no non-empty fixture addresses to cycle");
-    (0..n).map(|i| addresses[i % addresses.len()].clone()).collect()
+    assert!(
+        !addresses.is_empty(),
+        "no non-empty fixture addresses to cycle"
+    );
+    (0..n)
+        .map(|i| addresses[i % addresses.len()].clone())
+        .collect()
 }
 
 fn main() {
@@ -56,7 +61,10 @@ fn main() {
                 .unwrap_or_else(|e| panic!("{path:?} isn't a JSON array of strings: {e}"));
             (corpus, "given corpus file")
         }
-        None => (fallback_corpus(20_000), "fixtures.json, cycled (pass a corpus file for an apples-to-apples comparison -- see this file's doc comment)"),
+        None => (
+            fallback_corpus(20_000),
+            "fixtures.json, cycled (pass a corpus file for an apples-to-apples comparison -- see this file's doc comment)",
+        ),
     };
     let n = corpus.len();
     let corpus: Vec<&str> = corpus.iter().map(String::as_str).collect();

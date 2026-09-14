@@ -50,7 +50,10 @@ pub mod bench_timing {
 
     /// `(feature_extraction_ns, crf_tagging_ns)` accumulated since the last [`reset`].
     pub fn snapshot() -> (u64, u64) {
-        (FEATURE_NS.load(Ordering::Relaxed), TAG_NS.load(Ordering::Relaxed))
+        (
+            FEATURE_NS.load(Ordering::Relaxed),
+            TAG_NS.load(Ordering::Relaxed),
+        )
     }
 }
 
@@ -357,7 +360,11 @@ mod tests {
                 .parse_with_confidence(addr)
                 .expect("parse_with_confidence succeeds");
 
-            assert_eq!(plain.len(), confident.len(), "token count differs for {addr:?}");
+            assert_eq!(
+                plain.len(),
+                confident.len(),
+                "token count differs for {addr:?}"
+            );
             for ((token, label), (c_token, c_label, confidence)) in
                 plain.iter().zip(confident.iter())
             {
@@ -391,8 +398,14 @@ mod tests {
                 .tag_with_confidence(addr)
                 .expect("tag_with_confidence succeeds");
 
-            assert_eq!(plain_tagged, confident_tagged, "components differ for {addr:?}");
-            assert_eq!(plain_type, confident_type, "address type differs for {addr:?}");
+            assert_eq!(
+                plain_tagged, confident_tagged,
+                "components differ for {addr:?}"
+            );
+            assert_eq!(
+                plain_type, confident_type,
+                "address type differs for {addr:?}"
+            );
             assert!(
                 (0.0..=1.0).contains(&confidence),
                 "sequence confidence {confidence} for {addr:?} out of [0, 1]"

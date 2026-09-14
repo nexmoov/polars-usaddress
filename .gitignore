@@ -42,3 +42,5 @@ share/python-wheels/
 *.egg
 MANIFEST
 
+# Data
+tools/bench_corpus.json

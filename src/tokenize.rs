@@ -42,7 +42,9 @@ mod tests {
     fn basic() {
         assert_eq!(
             toks("123 Main St. Suite 100 Chicago, IL 60601"),
-            ["123", "Main", "St.", "Suite", "100", "Chicago,", "IL", "60601"]
+            [
+                "123", "Main", "St.", "Suite", "100", "Chicago,", "IL", "60601"
+            ]
         );
     }
 
