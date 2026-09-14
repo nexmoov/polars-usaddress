@@ -1,0 +1,23 @@
+# Vendored from crates.io crfs 0.4.1 (MIT, messense/crfs-rs) — see VENDORED.md.
+# Inference-only: the training module, its dependencies, and upstream tests/benches
+# are removed; correctness is enforced by this repo's parity and equivalence suites.
+
+[package]
+publish = false
+name = "crfs"
+version = "0.4.1"
+edition = "2024"
+authors = ["messense <messense@icloud.com>"]
+description = "Pure Rust port of CRFsuite (vendored, inference-only)"
+license = "MIT"
+repository = "https://github.com/messense/crfs-rs"
+
+[lib]
+name = "crfs"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1.0"
+bitflags = "2.10.0"
+bstr = "1.0.0"
+cqdb = "0.7"
