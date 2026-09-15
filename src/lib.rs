@@ -57,12 +57,24 @@ pub mod bench_timing {
     }
 }
 
-/// The 26 base labels, plus the 6 `Second*` variants that [`tag`] can synthesise
-/// for the far side of an intersection.
+/// The 29 labels the embedded CRF model can actually emit, plus the 7
+/// `Second*` variants that [`tag`] can synthesise for the far side of an
+/// intersection (one per model label whose name contains `"StreetName"` --
+/// see the substring test in [`collapse`]).
 ///
 /// This is the full set of keys [`tag`] can ever produce, and therefore the
 /// struct schema the Polars plugin exposes.
-pub const LABELS: [&str; 32] = [
+///
+/// Note this is **not** the same as the `usaddress.LABELS` constant in the
+/// upstream Python package: that constant only lists 26 labels and omits
+/// three the model can genuinely produce -- `CountryName`, `ZipPlus4`, and
+/// `StreetNamePostModifier` (confirmed by dumping the label alphabet
+/// straight from the pinned `usaddr.crfsuite` model via
+/// `pycrfsuite.Tagger().labels()`, which returns 29, not 26). A schema built
+/// from `usaddress.LABELS` silently drops any row the model tags with one of
+/// those three -- e.g. `usaddress.tag("O'Hare.")` produces
+/// `{"CountryName": "O'Hare."}` upstream, which would have nowhere to go.
+pub const LABELS: [&str; 36] = [
     "AddressNumberPrefix",
     "AddressNumber",
     "AddressNumberSuffix",
@@ -72,6 +84,7 @@ pub const LABELS: [&str; 32] = [
     "StreetName",
     "StreetNamePostType",
     "StreetNamePostDirectional",
+    "StreetNamePostModifier",
     "SubaddressType",
     "SubaddressIdentifier",
     "BuildingName",
@@ -82,6 +95,8 @@ pub const LABELS: [&str; 32] = [
     "PlaceName",
     "StateName",
     "ZipCode",
+    "ZipPlus4",
+    "CountryName",
     "USPSBoxType",
     "USPSBoxID",
     "USPSBoxGroupType",
@@ -89,13 +104,15 @@ pub const LABELS: [&str; 32] = [
     "IntersectionSeparator",
     "Recipient",
     "NotAddress",
-    // Synthesised by `tag` once an IntersectionSeparator has been seen.
+    // Synthesised by `tag` once an IntersectionSeparator has been seen, for
+    // every base label above whose name contains "StreetName".
     "SecondStreetNamePreModifier",
     "SecondStreetNamePreDirectional",
     "SecondStreetNamePreType",
     "SecondStreetName",
     "SecondStreetNamePostType",
     "SecondStreetNamePostDirectional",
+    "SecondStreetNamePostModifier",
 ];
 
 /// What kind of address `tag` decided it was looking at.

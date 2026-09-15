@@ -24,8 +24,19 @@ LIB = Path(__file__).parent
 
 UPSTREAM_VERSION = "0.5.16"
 
-#: Every field `tag_address` can produce. The six `Second*` variants appear
-#: only on the far side of an intersection.
+#: Every field `tag_address` can produce: the 29 labels the embedded CRF
+#: model can actually emit, plus the 7 `Second*` variants that appear only
+#: on the far side of an intersection. Kept in sync by hand with the Rust
+#: `LABELS` constant in `src/lib.rs` -- update both together.
+#:
+#: Deliberately *not* the same as upstream's own `usaddress.LABELS`, which
+#: only lists 26 labels and omits three the model can genuinely produce:
+#: `CountryName`, `ZipPlus4`, `StreetNamePostModifier` (confirmed by dumping
+#: the label alphabet straight from the pinned `usaddr.crfsuite` model via
+#: `pycrfsuite.Tagger().labels()`, which returns 29). A schema built from
+#: `usaddress.LABELS` would silently drop any row the model tags with one of
+#: those three -- e.g. `usaddress.tag("O'Hare.")` produces
+#: `{"CountryName": "O'Hare."}` upstream, which would have nowhere to go.
 LABELS = (
     "AddressNumberPrefix",
     "AddressNumber",
@@ -36,6 +47,7 @@ LABELS = (
     "StreetName",
     "StreetNamePostType",
     "StreetNamePostDirectional",
+    "StreetNamePostModifier",
     "SubaddressType",
     "SubaddressIdentifier",
     "BuildingName",
@@ -46,6 +58,8 @@ LABELS = (
     "PlaceName",
     "StateName",
     "ZipCode",
+    "ZipPlus4",
+    "CountryName",
     "USPSBoxType",
     "USPSBoxID",
     "USPSBoxGroupType",
@@ -59,6 +73,7 @@ LABELS = (
     "SecondStreetName",
     "SecondStreetNamePostType",
     "SecondStreetNamePostDirectional",
+    "SecondStreetNamePostModifier",
 )
 
 

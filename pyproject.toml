@@ -20,5 +20,6 @@ python-source = "python"
 dev = [
     "jupyterlab>=4.6.3",
     "plotly>=7.0.0",
+    "pytest>=9.1.1",
     "usaddress>=0.5.16",
 ]

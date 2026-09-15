@@ -4,7 +4,7 @@
 //!
 //! * [`parse_address`] -> `List[Struct{token, label}]`, faithful to the raw
 //!   per-token labelling. Nothing is merged or dropped.
-//! * [`tag_address`]   -> `Struct{<32 label fields>, address_type}`, the
+//! * [`tag_address`]   -> `Struct{<36 label fields>, address_type}`, the
 //!   ergonomic one: `.struct.field("ZipCode")` and you are done.
 
 use std::collections::HashMap;
