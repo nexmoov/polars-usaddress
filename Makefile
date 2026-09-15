@@ -1,19 +1,14 @@
 .PHONY: test
 test:
-	cargo test && poetry run maturin develop -r && poetry run pytest tests
-
-.PHONY: check-stubs
-check-stubs:
-	poetry run mypy --strict geohash_polygon/__init__.pyi
-
+	cargo test && uv run maturin develop -r && uv run pytest tests
 
 .PHONY: format
 format: ## Format the code
 	$(info --- Rust format ---)
 	cargo fmt
 	$(info --- Python format ---)
-	poetry run ruff check . --fix
-	poetry run ruff format .
+	uv run ruff check . --fix
+	uv run ruff format .
 
 
 .PHONY: check-rust
