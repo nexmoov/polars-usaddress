@@ -23,7 +23,7 @@ in `vendor/crfs` — is vendored, not authored, and honestly opaque to the devs 
 way most people's dependencies are: I don't understand crfsuite's internals,
 
 The outputs are tested by:
-- A differential test against real Python `usaddress` (`tools/verify_model.py`, 4,034 addresses, 0 mismatches) 
+- A differential test against real Python `usaddress` (golden vectors captured by `tools/gen_fixtures.py`, replayed in `tests/parity.rs`)
 - An exhaustive equivalence test between this crate's two feature-extraction paths (`id_features_match_string_features_exactly` in `src/features.rs`)
 
 If something looks wrong, issues and contributions are very welcome.
@@ -64,16 +64,17 @@ prefix-join with `:` and are never recursive — there is no `next:next:`.
 index *n*−2.
 
 Getting any of this wrong does not raise — it silently degrades parses. So the
-encoder was differential-tested against the reference implementation over 4,034
-addresses before any Rust was written (`tools/verify_model.py`, 0 mismatches),
-and `tests/parity.rs` replays golden vectors captured from it.
+encoder was differential-tested against the reference implementation before any
+Rust was written, and `tests/parity.rs` replays golden vectors (`tools/gen_fixtures.py`,
+currently 40 addresses covering ordinary addresses, intersections, PO boxes,
+punctuation/tokenizer edge cases, unicode, and `RepeatedLabelError` cases)
+captured from it.
 
 ## Regenerating after an upstream bump
 
 ```bash
 pip install --upgrade usaddress
-python tools/verify_model.py     # confirm the encoding still holds
-python tools/gen_fixtures.py     # refresh golden vectors
+python tools/gen_fixtures.py     # refresh golden vectors; confirms the encoding still holds
 cp "$(python -c 'import usaddress,os;print(usaddress.MODEL_PATH)')" models/
 ```
 
