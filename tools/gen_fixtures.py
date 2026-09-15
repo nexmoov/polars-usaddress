@@ -38,6 +38,23 @@ ADDRESSES = [
     "123 1/2 Main St",
     "123\u00bd Main St",
     "123A Main St",
+    # --- leading vulgar fraction as its OWN token (regression: the `regex`
+    # crate's Unicode \w is narrower than Python's, so a leading No-category
+    # fraction was silently dropped as the first token -- see tokenize.rs) ---
+    "\u00bd Main St",
+    "\u00bc Main St",
+    "\u00bd Ave..",
+    "\u00bd Ave.. Main Suite 100",
+    "\u00bd Main St Apt 4",
+    # --- labels the model can emit that upstream's own `usaddress.LABELS`
+    # constant omits (CountryName, ZipPlus4, StreetNamePostModifier) --
+    # regression: the Rust/Python LABELS constants were built off that
+    # narrower list and silently dropped these three ---
+    "123 Main St, Chicago IL 60601 1234",  # ZipPlus4
+    "123 Main St, Chicago IL 60601-1234 USA",  # CountryName
+    "123 Main St Ext Chicago IL",  # StreetNamePostModifier
+    "Main St and Oak St Ext Chicago IL",  # SecondStreetNamePostModifier
+    "O'Hare.",  # CountryName, single ambiguous token
     # --- recipient / landmark / ambiguous ---
     "Attn: Jane Doe, 123 Main St, Chicago IL",
     "The White House",

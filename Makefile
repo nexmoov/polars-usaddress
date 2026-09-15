@@ -1,6 +1,6 @@
 .PHONY: test
 test:
-	cargo test && uv run maturin develop -r && uv run pytest tests
+	cargo test --no-default-features && uv run maturin develop -r && uv run pytest tests
 
 .PHONY: format
 format: ## Format the code
