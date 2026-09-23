@@ -105,6 +105,58 @@ fn tag_matches_upstream() {
     }
 }
 
+/// `tests/corpus_fixtures.json`: upstream's outputs for every address in the
+/// notebook's seeded 20k synthetic corpus. Outputs only (no attributes), so it
+/// stays small enough to check on every `cargo test`.
+#[derive(Deserialize)]
+struct Corpus {
+    usaddress_version: String,
+    fixtures: Vec<CorpusCase>,
+}
+
+#[derive(Deserialize)]
+struct CorpusCase {
+    input: String,
+    parse: Vec<(String, String)>,
+    /// `None` exactly when upstream raised `RepeatedLabelError`.
+    tag: Option<HashMap<String, String>>,
+    address_type: Option<String>,
+}
+
+#[test]
+fn corpus_matches_upstream() {
+    let corpus: Corpus = serde_json::from_str(include_str!("corpus_fixtures.json"))
+        .expect("corpus_fixtures.json parses");
+    assert_eq!(corpus.usaddress_version, polars_usaddress::UPSTREAM_VERSION);
+    assert!(corpus.fixtures.len() >= 10_000, "corpus unexpectedly small");
+
+    let mut parser = Parser::new().unwrap();
+    let mut failures = Vec::new();
+    for case in &corpus.fixtures {
+        let parsed = parser.parse(&case.input).unwrap();
+        if parsed != case.parse {
+            failures.push(format!("parse {:?}: got {parsed:?}", case.input));
+            continue;
+        }
+        let got = match parser.tag(&case.input) {
+            Ok((c, t)) => Some((c, t.as_str().to_string())),
+            Err(polars_usaddress::Error::RepeatedLabel { .. }) => None,
+            Err(e) => panic!("unexpected error for {:?}: {e}", case.input),
+        };
+        let want = case.tag.clone().zip(case.address_type.clone());
+        if got != want {
+            failures.push(format!("tag {:?}: got {got:?}, want {want:?}", case.input));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} of {} corpus addresses diverge from upstream; first few:\n{}",
+        failures.len(),
+        corpus.fixtures.len(),
+        failures[..failures.len().min(10)].join("\n")
+    );
+}
+
 #[test]
 fn empty_input_is_ambiguous_not_an_error() {
     for s in ["", "   ", ",,,"] {

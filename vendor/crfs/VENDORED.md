@@ -46,6 +46,13 @@ built on in two more steps, all in the same session:
 the single best label sequence, not per-position probabilities, so there's been no reason
 to reach for it.
 
+Local changes made in this repo, on top of the fastaddress copy:
+
+- Generic-path Viterbi (`Context::viterbi`, used for the usaddress model's 29 labels) finds
+  each step's best predecessor in two passes, a max reduction then a first-index search,
+  instead of one running argmax. Same sums and same tie-break (first index wins), about 7%
+  faster end to end. A dedicated `29` unrolled arm was tried and measured slower.
+
 fastaddress's own `benchmark/` and `training/` directories, its `crates/core` and
 `crates/python`, and its bundled model file are NOT part of this vendoring — only
 `crates/crf` (this directory's contents) was taken.

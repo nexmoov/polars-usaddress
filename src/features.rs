@@ -15,15 +15,15 @@
 //! [`tokens_to_features`] builds the upstream-shaped `Vec<Attribute>`.
 //! [`tokens_to_id_features`] is the fast path `Parser::parse` actually
 //! calls -- same features, resolved straight to `(attr_id, weight)` pairs via
-//! `bounded_ids` -- and is checked against `tokens_to_features` for exact
+//! `bounded_ids`, with the zero-weight ones dropped because they cannot change
+//! a score -- and is checked against `tokens_to_features` for exact
 //! equivalence in this module's tests.
 
 use crfs::Attribute;
 
+use crate::attr_cache;
 use crate::bounded_ids;
 use crate::lexicon::{DIRECTIONS, STREET_NAMES};
-
-const SKIP_ZERO_WEIGHT_ATTRS: bool = false;
 
 /// Which of the three enumerable digit classes a token falls into.
 ///
@@ -163,9 +163,6 @@ pub fn token_features(token: &str) -> TokenFeatures {
 
 #[inline]
 fn push_bool(out: &mut Vec<Attribute>, prefix: &str, key: &str, value: bool) {
-    if !value && SKIP_ZERO_WEIGHT_ATTRS {
-        return;
-    }
     out.push(Attribute::new(
         format!("{prefix}{key}"),
         if value { 1.0 } else { 0.0 },
@@ -246,13 +243,15 @@ pub fn tokens_to_features(tokens: &[&str]) -> Vec<Vec<Attribute>> {
 
 // ------------------------------------------------------------- id-based path
 
+/// Boolean feature. A false one is *not* emitted, unlike in
+/// [`push_bool`]'s upstream-shaped encoding: it would carry weight 0.0, and
+/// the tagger adds `feature_weight * 0.0` (a signed zero) to each state score,
+/// which leaves every finite sum bit-for-bit unchanged. So dropping it is
+/// exact, and saves roughly half of all attribute lookups.
 #[inline]
 fn push_fixed(out: &mut Vec<(u32, f64)>, id: Option<u32>, value: bool) {
-    if !value && SKIP_ZERO_WEIGHT_ATTRS {
-        return;
-    }
-    if let Some(id) = id {
-        out.push((id, if value { 1.0 } else { 0.0 }));
+    if value && let Some(id) = id {
+        out.push((id, 1.0));
     }
 }
 
@@ -277,7 +276,8 @@ impl TokenFeatures {
     /// resolved straight to `(attr_id, weight)` pairs via `bounded_ids`.
     /// `prefix_idx` indexes `bounded_ids::PREFIXES` (0 = own, 1 = `previous:`,
     /// 2 = `next:`) and must agree with the string `prefix` used below.
-    fn encode_ids_into(&self, out: &mut Vec<(u32, f64)>, prefix_idx: usize) {
+    /// `free` is this token's [`FreeTextIds`].
+    fn encode_ids_into(&self, free: &FreeTextIds, out: &mut Vec<(u32, f64)>, prefix_idx: usize) {
         let t = &bounded_ids::TABLES;
         let prefix = bounded_ids::PREFIXES[prefix_idx];
 
@@ -286,17 +286,17 @@ impl TokenFeatures {
         let class_idx = self.digits as usize;
         push_present(out, t.digits_id(prefix_idx, class_idx));
 
-        match &self.word {
-            Some(w) => push_slow(out, prefix, "word", w),
-            None => push_fixed(out, t.word_false(prefix_idx), false),
+        // `None` here is upstream's `False`: a zero-weight attribute, dropped
+        // for the same reason as in `push_fixed`.
+        if self.word.is_some() {
+            push_present(out, free.word[prefix_idx]);
         }
 
-        match &self.trailing_zeros {
-            Some(z) => match t.trailing_zeros_some_id(prefix_idx, z.len()) {
+        if let Some(z) = &self.trailing_zeros {
+            match t.trailing_zeros_some_id(prefix_idx, z.len()) {
                 Some(cached) => push_present(out, cached),
                 None => push_slow(out, prefix, "trailing.zeros", z),
-            },
-            None => push_fixed(out, t.trailing_zeros_false(prefix_idx), false),
+            }
         }
 
         let (is_word, count) = self.length;
@@ -308,9 +308,8 @@ impl TokenFeatures {
             }
         }
 
-        match &self.endsinpunc {
-            Some(c) => push_slow(out, prefix, "endsinpunc", c),
-            None => push_fixed(out, t.endsinpunc_false(prefix_idx), false),
+        if self.endsinpunc.is_some() {
+            push_present(out, free.endsinpunc[prefix_idx]);
         }
 
         push_fixed(out, t.directional(prefix_idx), self.directional);
@@ -319,10 +318,34 @@ impl TokenFeatures {
     }
 }
 
+/// Ids of a token's two free-text features (`word`, `endsinpunc`) from all
+/// three viewpoints, found with one lookup of the bare value each rather
+/// than formatting and hashing `"{prefix}word:{value}"` three times.
+struct FreeTextIds {
+    word: attr_cache::ViewIds,
+    endsinpunc: attr_cache::ViewIds,
+}
+
+impl FreeTextIds {
+    fn of(features: &TokenFeatures) -> Self {
+        Self {
+            word: features
+                .word
+                .as_deref()
+                .map_or([None; 3], attr_cache::word_ids),
+            endsinpunc: features
+                .endsinpunc
+                .as_deref()
+                .map_or([None; 3], attr_cache::endsinpunc_ids),
+        }
+    }
+}
+
 /// Id-based equivalent of [`tokens_to_features`]; what `Parser::parse`
 /// actually calls.
 pub fn tokens_to_id_features(tokens: &[&str]) -> Vec<Vec<(u32, f64)>> {
     let base: Vec<TokenFeatures> = tokens.iter().map(|t| token_features(t)).collect();
+    let free: Vec<FreeTextIds> = base.iter().map(FreeTextIds::of).collect();
     let n = base.len();
     let t = &bounded_ids::TABLES;
 
@@ -330,7 +353,7 @@ pub fn tokens_to_id_features(tokens: &[&str]) -> Vec<Vec<(u32, f64)>> {
         .map(|i| {
             let mut ids = Vec::with_capacity(29);
 
-            base[i].encode_ids_into(&mut ids, 0);
+            base[i].encode_ids_into(&free[i], &mut ids, 0);
             if i == 0 {
                 push_present(&mut ids, t.address_start);
             }
@@ -338,13 +361,13 @@ pub fn tokens_to_id_features(tokens: &[&str]) -> Vec<Vec<(u32, f64)>> {
                 push_present(&mut ids, t.address_end);
             }
             if i > 0 {
-                base[i - 1].encode_ids_into(&mut ids, 1);
+                base[i - 1].encode_ids_into(&free[i - 1], &mut ids, 1);
                 if i == 1 {
                     push_present(&mut ids, t.previous_address_start);
                 }
             }
             if i + 1 < n {
-                base[i + 1].encode_ids_into(&mut ids, 2);
+                base[i + 1].encode_ids_into(&free[i + 1], &mut ids, 2);
                 if i + 2 == n {
                     push_present(&mut ids, t.next_address_end);
                 }
@@ -430,10 +453,12 @@ mod tests {
     }
 
     /// `tokens_to_id_features` must match `tokens_to_features` resolved
-    /// through `attr_cache::resolve_one` -- same ids, weights, and order.
-    /// Order matters: state scores are f64 sums, and float addition isn't
-    /// strictly associative, so a reordering could change a Viterbi
-    /// tie-break. Checked against every address in the parity fixtures.
+    /// through `attr_cache::resolve_one`, minus the zero-weight attributes
+    /// the fast path deliberately drops (see `push_fixed`) -- same ids,
+    /// weights, and order otherwise. Order matters: state scores are f64
+    /// sums, and float addition isn't strictly associative, so a reordering
+    /// could change a Viterbi tie-break. Checked against every address in the
+    /// parity fixtures.
     #[test]
     fn id_features_match_string_features_exactly() {
         use crate::attr_cache;
@@ -464,6 +489,7 @@ mod tests {
                 .map(|attrs| {
                     attrs
                         .iter()
+                        .filter(|a| a.value != 0.0)
                         .filter_map(|a| attr_cache::resolve_one(&a.name).map(|id| (id, a.value)))
                         .collect()
                 })

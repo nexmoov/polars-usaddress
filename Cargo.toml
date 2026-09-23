@@ -14,7 +14,7 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["polars-plugin"]
-polars-plugin = ["dep:polars", "dep:polars-core", "dep:pyo3", "dep:pyo3-polars", "dep:rayon"]
+polars-plugin = ["dep:polars", "dep:polars-arrow", "dep:polars-core", "dep:pyo3", "dep:pyo3-polars", "dep:rayon"]
 bench-timing = []
 
 [dependencies]
@@ -26,6 +26,7 @@ rustc-hash = "2"
 
 polars = { version = "0.55", features = ["dtype-struct"], default-features = false, optional = true }
 polars-core = { version = "0.55", default-features = false, optional = true }
+polars-arrow = { version = "0.55", default-features = false, optional = true }
 pyo3 = { version = "0.29", features = ["extension-module", "abi3-py39"], optional = true }
 pyo3-polars = { version = "0.28", features = ["derive"], optional = true }
 

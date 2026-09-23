@@ -520,8 +520,13 @@ impl Context {
             10 => return self.viterbi_unrolled::<10>(num_items, vstate),
             12 => return self.viterbi_unrolled::<12>(num_items, vstate),
             16 => return self.viterbi_unrolled::<16>(num_items, vstate),
-            // Vendored addition: the usaddress model has 26 labels, which
-            // previously fell through to the generic scalar loop.
+            // Vendored addition (fastaddress): 26 labels, which previously
+            // fell through to the generic scalar loop.
+            //
+            // polars-usaddress: the usaddress 0.5.16 model has 29 labels, not
+            // 26, so it takes the generic path below. A `29` arm here
+            // measured ~5% *slower* than that path (the chained running
+            // argmax doesn't vectorise), so there deliberately isn't one.
             26 => return self.viterbi_unrolled::<26>(num_items, vstate),
             _ => {} // Fall through to generic version
         }
@@ -537,23 +542,25 @@ impl Context {
             let back = &mut vstate.backward_edge[l * t..];
             // Compute the score of (t, j)
             for j in 0..l {
-                let mut max_score = f64::MIN;
-                let mut argmax_score = None;
                 // Use transposed matrix for cache-friendly sequential access
-                let trans_col = &self.trans_t[l * j..];
-                for i in 0..l {
-                    // Transit from (t-1, i) to (t, j)
-                    // trans_t[j][i] = trans[i][j]
-                    let score = prev[i] + trans_col[i];
-                    // Store this path if it has the maximum score
-                    if max_score < score {
-                        max_score = score;
-                        argmax_score = Some(i);
-                    }
-                }
-                // Backward link (#t, #j) -> (#t-1, #i)
-                if let Some(argmax_score) = argmax_score {
-                    back[j] = argmax_score as u32;
+                // trans_t[j][i] = trans[i][j]
+                let trans_col = &self.trans_t[l * j..l * j + l];
+                // polars-usaddress: two passes instead of one running
+                // argmax. The max is a branch-free reduction the compiler can
+                // vectorise; the second pass finds the *first* index holding
+                // it, which is exactly what the original strict `<` scan
+                // picked on ties. Same sums, same winner.
+                let max_score = prev[..l]
+                    .iter()
+                    .zip(trans_col)
+                    .fold(f64::MIN, |m, (p, t)| m.max(p + t));
+                if let Some(i) = prev[..l]
+                    .iter()
+                    .zip(trans_col)
+                    .position(|(p, t)| p + t == max_score)
+                {
+                    // Backward link (#t, #j) -> (#t-1, #i)
+                    back[j] = i as u32;
                 }
                 // Add the state score on (t, j)
                 current[j] = max_score + state_t[j];
@@ -709,5 +716,88 @@ mod tests {
         let mut ctx = Context::new(Flag::VITERBI | Flag::MARGINALS, 2, 0);
         ctx.reset(Reset::TRANS);
         ctx.reset(Reset::ALL);
+    }
+
+    /// polars-usaddress: the generic-path Viterbi as it was before the two-pass
+    /// argmax (single running argmax, strict `<`), kept as the reference.
+    fn viterbi_running_argmax(ctx: &Context, vstate: &mut ViterbiState) -> Vec<u32> {
+        let l = ctx.num_labels as usize;
+        let num_items = vstate.num_items as usize;
+        vstate.alpha_score[..l].copy_from_slice(&vstate.state[..l]);
+        for t in 1..num_items {
+            let state_t = &vstate.state[l * t..];
+            let (prev, current) = vstate.alpha_score.split_at_mut(l * t);
+            let prev = &prev[l * (t - 1)..];
+            let back = &mut vstate.backward_edge[l * t..];
+            for j in 0..l {
+                let mut max_score = f64::MIN;
+                let mut argmax_score = None;
+                let trans_col = &ctx.trans_t[l * j..];
+                for i in 0..l {
+                    let score = prev[i] + trans_col[i];
+                    if max_score < score {
+                        max_score = score;
+                        argmax_score = Some(i);
+                    }
+                }
+                if let Some(argmax_score) = argmax_score {
+                    back[j] = argmax_score as u32;
+                }
+                current[j] = max_score + state_t[j];
+            }
+        }
+        let mut max_score = f64::MIN;
+        let prev = &vstate.alpha_score[l * (num_items - 1)..];
+        let mut labels = vec![0u32; num_items];
+        for (i, prev_value) in prev.iter().enumerate().take(l) {
+            if max_score < *prev_value {
+                max_score = *prev_value;
+                labels[num_items - 1] = i as u32;
+            }
+        }
+        for t in (0..(num_items - 1)).rev() {
+            let back = &vstate.backward_edge[l * (t + 1)..];
+            labels[t] = back[labels[t + 1] as usize];
+        }
+        labels
+    }
+
+    /// polars-usaddress: the two-pass argmax must pick exactly the labels and
+    /// backpointers the running argmax did. Scores are drawn from a handful
+    /// of small integers and both signed zeros, so exact ties -- the only
+    /// place the two could disagree -- happen constantly, unlike real data.
+    #[test]
+    fn two_pass_argmax_matches_running_argmax_on_ties() {
+        const VALUES: [f64; 8] = [-3.0, -2.0, -1.0, -0.0, 0.0, 1.0, 2.0, 3.0];
+        let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            VALUES[(seed % VALUES.len() as u64) as usize]
+        };
+
+        // Label counts that take the generic path (29 is the usaddress model).
+        for &l in &[11u32, 13, 29] {
+            for case in 0..2_000 {
+                let t = 1 + case % 8;
+                let mut ctx = Context::new(Flag::VITERBI, l, t);
+                for x in ctx.trans_t.iter_mut() {
+                    *x = next();
+                }
+                let mut a = ViterbiState::new(l, t);
+                for x in a.state.iter_mut() {
+                    *x = next();
+                }
+                let mut b = a.clone();
+
+                let (got, _) = ctx.viterbi(&mut a);
+                let want = viterbi_running_argmax(&ctx, &mut b);
+                assert_eq!(got, want, "labels, l={l} case={case}");
+                assert_eq!(a.backward_edge, b.backward_edge, "backpointers, l={l} case={case}");
+                // Values agree exactly; only the sign of an exact zero may differ.
+                assert_eq!(a.alpha_score, b.alpha_score, "alpha, l={l} case={case}");
+            }
+        }
     }
 }

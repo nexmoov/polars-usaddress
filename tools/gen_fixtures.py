@@ -1,8 +1,43 @@
-"""Generate golden parity fixtures from the reference Python usaddress."""
+"""Generate golden parity fixtures from the reference Python usaddress.
+
+Writes two files into tests/:
+
+* fixtures.json        -- the hand-picked edge cases below, with attributes
+* corpus_fixtures.json -- upstream's outputs for the 20k-address synthetic
+  corpus, outputs only, compact
+
+    uv run python tools/gen_fixtures.py
+
+corpus_fixtures.json stores its own input addresses, so it is the source of
+truth for the corpus: regenerating (e.g. after an upstream bump) re-computes
+outputs for the same inputs, and needs nothing that isn't committed. Only if
+it doesn't exist yet are inputs taken from tools/bench_corpus.json, which the
+benchmark notebook writes (gitignored).
+"""
 import json
+import sys
 from importlib.metadata import version
+from pathlib import Path
+
 import usaddress
 import pycrfsuite
+
+ROOT = Path(__file__).resolve().parent.parent
+TESTS = ROOT / "tests"
+CORPUS_FIXTURES = TESTS / "corpus_fixtures.json"
+BENCH_CORPUS = ROOT / "tools" / "bench_corpus.json"
+
+
+def corpus_inputs() -> list[str]:
+    if CORPUS_FIXTURES.exists():
+        return [c["input"] for c in json.loads(CORPUS_FIXTURES.read_text())["fixtures"]]
+    if BENCH_CORPUS.exists():
+        return json.loads(BENCH_CORPUS.read_text())
+    sys.exit(
+        f"No corpus inputs: neither {CORPUS_FIXTURES.relative_to(ROOT)} nor "
+        f"{BENCH_CORPUS.relative_to(ROOT)} exists. Run the benchmark notebook's "
+        "corpus-export cell to create the latter."
+    )
 
 ADDRESSES = [
     # --- ordinary street addresses ---
@@ -119,10 +154,37 @@ out = {
     "note": "Golden vectors from reference Python usaddress. Do not hand-edit.",
     "fixtures": fixtures,
 }
-with open("fixtures.json", "w") as f:
+with open(TESTS / "fixtures.json", "w") as f:
     json.dump(out, f, indent=2, ensure_ascii=False)
 
 n_attrs = sum(len(a) for e in fixtures for a in e["attributes"])
-print(f"{len(fixtures)} addresses, "
+print(f"fixtures.json: {len(fixtures)} addresses, "
       f"{sum(len(e['tokens']) for e in fixtures)} tokens, "
       f"{n_attrs} attributes")
+
+
+# --- corpus fixtures: outputs only, one compact entry per address ---------
+#
+# `parse` is [[token, label], ...]. `tag`/`address_type` are null exactly when
+# upstream raised RepeatedLabelError.
+corpus_entries = []
+for addr in corpus_inputs():
+    entry = {"input": addr, "parse": [list(p) for p in usaddress.parse(addr)]}
+    try:
+        tagged, addr_type = usaddress.tag(addr)
+        entry["tag"], entry["address_type"] = dict(tagged), addr_type
+    except usaddress.RepeatedLabelError:
+        entry["tag"], entry["address_type"] = None, None
+    corpus_entries.append(entry)
+
+corpus_out = {
+    "usaddress_version": version("usaddress"),
+    "note": "Golden outputs for tools/bench_corpus.json. Do not hand-edit.",
+    "fixtures": corpus_entries,
+}
+with open(TESTS / "corpus_fixtures.json", "w") as f:
+    json.dump(corpus_out, f, ensure_ascii=False, separators=(",", ":"))
+    f.write("\n")
+
+print(f"corpus_fixtures.json: {len(corpus_entries)} addresses, "
+      f"{sum(e['tag'] is None for e in corpus_entries)} RepeatedLabelError")

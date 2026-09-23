@@ -30,13 +30,8 @@ pub(crate) struct BoundedIds {
     directional: [Option<u32>; 3],
     street_name: [Option<u32>; 3],
     has_vowels: [Option<u32>; 3],
-    /// `word`'s `None` (all-digits token) branch only; `Some(word)` is
-    /// arbitrary text and stays on the slow path.
-    word_false: [Option<u32>; 3],
-    /// Same shape, for `trailing.zeros`'s `None` branch.
-    trailing_zeros_false: [Option<u32>; 3],
-    /// Same shape, for `endsinpunc`'s `None` branch.
-    endsinpunc_false: [Option<u32>; 3],
+    // No entries for `word`/`trailing.zeros`/`endsinpunc`'s `False` branch:
+    // those are zero-weight and the fast path never emits them.
     /// `[prefix][digits_class]` (0=all_digits, 1=some_digits, 2=no_digits).
     digits: [[Option<u32>; 3]; 3],
     /// `[prefix][is_word as usize][count]`. Outer `Option` (via `.get`)
@@ -77,9 +72,6 @@ pub(crate) static TABLES: LazyLock<BoundedIds> = LazyLock::new(|| {
         directional: fixed("directional"),
         street_name: fixed("street_name"),
         has_vowels: fixed("has.vowels"),
-        word_false: fixed("word"),
-        trailing_zeros_false: fixed("trailing.zeros"),
-        endsinpunc_false: fixed("endsinpunc"),
         digits,
         length,
         trailing_zeros_some,
@@ -106,18 +98,6 @@ impl BoundedIds {
     #[inline]
     pub(crate) fn has_vowels(&self, prefix: usize) -> Option<u32> {
         self.has_vowels[prefix]
-    }
-    #[inline]
-    pub(crate) fn word_false(&self, prefix: usize) -> Option<u32> {
-        self.word_false[prefix]
-    }
-    #[inline]
-    pub(crate) fn trailing_zeros_false(&self, prefix: usize) -> Option<u32> {
-        self.trailing_zeros_false[prefix]
-    }
-    #[inline]
-    pub(crate) fn endsinpunc_false(&self, prefix: usize) -> Option<u32> {
-        self.endsinpunc_false[prefix]
     }
 
     /// Digits classes are fully enumerable (always exactly one of three), so

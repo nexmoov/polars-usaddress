@@ -64,6 +64,37 @@ def test_parse_address_matches_fixture(case: dict) -> None:
     assert got == want, f"parse for {case['input']!r}"
 
 
+CORPUS = json.loads((Path(__file__).parent / "corpus_fixtures.json").read_text())["fixtures"]
+
+
+def test_corpus_tag_address_matches_upstream() -> None:
+    """All 20k corpus addresses in one column, so this also exercises the
+    multi-threaded path and row ordering, not just one-row frames."""
+    df = pl.DataFrame({"address": [c["input"] for c in CORPUS]})
+    rows = df.select(plua.tag_address("address").alias("t")).unnest("t").to_dicts()
+    bad = []
+    for case, row in zip(CORPUS, rows, strict=True):
+        got = {k: v for k, v in row.items() if k != "address_type" and v is not None}
+        if case["tag"] is None:
+            ok = row["address_type"] is None and not got
+        else:
+            ok = got == case["tag"] and row["address_type"] == case["address_type"]
+        if not ok:
+            bad.append(case["input"])
+    assert not bad, f"{len(bad)} rows diverge, e.g. {bad[:5]!r}"
+
+
+def test_corpus_parse_address_matches_upstream() -> None:
+    df = pl.DataFrame({"address": [c["input"] for c in CORPUS]})
+    parsed = df.select(plua.parse_address("address")).to_series().to_list()
+    bad = [
+        case["input"]
+        for case, rows in zip(CORPUS, parsed, strict=True)
+        if [[r["token"], r["label"]] for r in (rows or [])] != case["parse"]
+    ]
+    assert not bad, f"{len(bad)} rows diverge, e.g. {bad[:5]!r}"
+
+
 # The two regressions this file exists for, spelled out explicitly rather
 # than only via the fixture sweep above -- if these ever fail, it's one of
 # the two bugs described in the module docstring, not a fixture drift.
