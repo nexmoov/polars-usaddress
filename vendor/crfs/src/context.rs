@@ -520,8 +520,13 @@ impl Context {
             10 => return self.viterbi_unrolled::<10>(num_items, vstate),
             12 => return self.viterbi_unrolled::<12>(num_items, vstate),
             16 => return self.viterbi_unrolled::<16>(num_items, vstate),
-            // Vendored addition: the usaddress model has 26 labels, which
-            // previously fell through to the generic scalar loop.
+            // Vendored addition (fastaddress): 26 labels, which previously
+            // fell through to the generic scalar loop.
+            //
+            // polars-usaddress: the usaddress 0.5.16 model has 29 labels, not
+            // 26, so it takes the generic path below. A `29` arm here
+            // measured ~5% *slower* than that path (the chained running
+            // argmax doesn't vectorise), so there deliberately isn't one.
             26 => return self.viterbi_unrolled::<26>(num_items, vstate),
             _ => {} // Fall through to generic version
         }
@@ -537,23 +542,25 @@ impl Context {
             let back = &mut vstate.backward_edge[l * t..];
             // Compute the score of (t, j)
             for j in 0..l {
-                let mut max_score = f64::MIN;
-                let mut argmax_score = None;
                 // Use transposed matrix for cache-friendly sequential access
-                let trans_col = &self.trans_t[l * j..];
-                for i in 0..l {
-                    // Transit from (t-1, i) to (t, j)
-                    // trans_t[j][i] = trans[i][j]
-                    let score = prev[i] + trans_col[i];
-                    // Store this path if it has the maximum score
-                    if max_score < score {
-                        max_score = score;
-                        argmax_score = Some(i);
-                    }
-                }
-                // Backward link (#t, #j) -> (#t-1, #i)
-                if let Some(argmax_score) = argmax_score {
-                    back[j] = argmax_score as u32;
+                // trans_t[j][i] = trans[i][j]
+                let trans_col = &self.trans_t[l * j..l * j + l];
+                // polars-usaddress: two passes instead of one running
+                // argmax. The max is a branch-free reduction the compiler can
+                // vectorise; the second pass finds the *first* index holding
+                // it, which is exactly what the original strict `<` scan
+                // picked on ties. Same sums, same winner.
+                let max_score = prev[..l]
+                    .iter()
+                    .zip(trans_col)
+                    .fold(f64::MIN, |m, (p, t)| m.max(p + t));
+                if let Some(i) = prev[..l]
+                    .iter()
+                    .zip(trans_col)
+                    .position(|(p, t)| p + t == max_score)
+                {
+                    // Backward link (#t, #j) -> (#t-1, #i)
+                    back[j] = i as u32;
                 }
                 // Add the state score on (t, j)
                 current[j] = max_score + state_t[j];
