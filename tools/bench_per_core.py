@@ -71,7 +71,10 @@ def plugin_child(fn_name: str) -> None:
 
 def plugin(fn_name: str, threads: int | None) -> float:
     env = dict(os.environ)
-    if threads is not None:
+    if threads is None:
+        env.pop("RAYON_NUM_THREADS", None)
+        env.pop("POLARS_MAX_THREADS", None)
+    else:
         env["RAYON_NUM_THREADS"] = str(threads)
         env["POLARS_MAX_THREADS"] = str(threads)
     out = subprocess.run(
