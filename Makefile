@@ -1,6 +1,10 @@
 .PHONY: test
 test:
 	cargo test --no-default-features && uv run maturin develop -r && uv run pytest tests
+	@# vendor/crfs is a path dependency, so the root `cargo test` doesn't run its
+	@# tests. Only `context::` is runnable: the others need upstream's
+	@# tests/model.crfsuite, which wasn't vendored.
+	cargo test --manifest-path vendor/crfs/Cargo.toml --release context::
 
 .PHONY: format
 format: ## Format the code

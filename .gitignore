@@ -44,3 +44,6 @@ MANIFEST
 
 # Data
 tools/bench_corpus.json
+
+# Created by `make test` running vendor/crfs tests on their own manifest
+vendor/crfs/Cargo.lock
