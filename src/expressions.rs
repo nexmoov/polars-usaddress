@@ -7,6 +7,8 @@
 //! * [`tag_address`]   -> `Struct{<36 label fields>, address_type}`, the
 //!   ergonomic one: `.struct.field("ZipCode")` and you are done.
 
+use std::sync::LazyLock;
+
 use polars::prelude::*;
 use polars_arrow::array::ListArray;
 use polars_arrow::bitmap::Bitmap;
@@ -32,15 +34,29 @@ where
     // on some worker thread.
     Parser::new().map_err(|e| polars_err!(ComputeError: "failed to load address model: {e}"))?;
 
-    ca.iter()
-        .collect::<Vec<_>>()
-        .into_par_iter()
-        .map_init(new_worker_parser, |parser, opt| match opt {
-            None => Ok(None),
-            Some(s) => f(parser, s),
-        })
-        .collect()
+    POOL.install(|| {
+        ca.iter()
+            .collect::<Vec<_>>()
+            .into_par_iter()
+            .map_init(new_worker_parser, |parser, opt| match opt {
+                None => Ok(None),
+                Some(s) => f(parser, s),
+            })
+            .collect()
+    })
 }
+
+/// The plugin's own Rayon pool. This library carries its own copy of Rayon,
+/// separate from the Polars it's loaded into, so Rayon's default global pool
+/// would ignore Polars' `POLARS_MAX_THREADS` cap. Size it from that instead.
+static POOL: LazyLock<rayon::ThreadPool> = LazyLock::new(|| {
+    let threads = crate::pool_size(std::env::var("POLARS_MAX_THREADS").ok().as_deref());
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .thread_name(|i| format!("polars-usaddress-{i}"))
+        .build()
+        .expect("plugin thread pool builds")
+});
 
 /// One `String` column per entry of [`LABELS`], moving each component out of
 /// its row rather than cloning it. `None` rows are null in every column.

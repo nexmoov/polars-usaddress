@@ -359,6 +359,18 @@ impl Parser {
     }
 }
 
+/// Worker threads for the plugin's pool: `POLARS_MAX_THREADS` if it's a
+/// positive integer (the same cap Polars applies to itself), otherwise one
+/// per core. Takes the variable's value rather than reading the environment,
+/// so it can be tested.
+#[cfg(any(test, feature = "polars-plugin"))]
+pub(crate) fn pool_size(polars_max_threads: Option<&str>) -> usize {
+    polars_max_threads
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
+}
+
 /// Convenience wrapper that builds a throwaway [`Parser`].
 ///
 /// Fine for one-off calls; use [`Parser`] directly in a loop.
@@ -452,6 +464,17 @@ fn collapse(tokens: &[&str], label_ids: &[u32]) -> Result<(Components, AddressTy
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pool_size_follows_polars_max_threads() {
+        let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+        assert_eq!(pool_size(Some("3")), 3);
+        assert_eq!(pool_size(Some(" 2 ")), 2);
+        // Unset, zero or junk: fall back to one thread per core.
+        for unusable in [None, Some("0"), Some(""), Some("lots"), Some("-1")] {
+            assert_eq!(pool_size(unusable), cores, "for {unusable:?}");
+        }
+    }
 
     /// `parse` and `parse_with_confidence` must decode the same Viterbi path,
     /// and every confidence value must be a legitimate probability.

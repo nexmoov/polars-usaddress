@@ -43,6 +43,9 @@ df.with_columns(parsed=ua.tag_address("address")).unnest("parsed")
 (see `ua.LABELS`) plus `address_type`. `parse_address` returns the raw
 `list[struct[{token, label}]]` labelling when you need order and repetition.
 
+The plugin parses rows in parallel on its own thread pool, sized like Polars'
+own: `POLARS_MAX_THREADS` if set, otherwise one thread per core.
+
 ## Parity with upstream
 
 The port's correctness rests on matching two things exactly: the tokenizer, and
