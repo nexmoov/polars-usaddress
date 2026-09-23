@@ -37,6 +37,25 @@ static RE_TOKENS: LazyLock<Regex> = LazyLock::new(|| {
         .expect("tokenizer regex is valid")
 });
 
+/// The leading-junk prefix of an `RE_TOKENS` match: exactly its first,
+/// un-grouped part.
+static RE_JUNK: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^[^\s,;#&()\p{L}\p{N}\p{M}\p{Pc}]+").expect("junk regex is valid")
+});
+
+/// Group 1 or 2 of an `RE_TOKENS` match, recovered from the whole match
+/// without asking the regex for capture groups (which forces its slower
+/// engine). The junk prefix can't contain `(`, `#`, `&` or a word character,
+/// so stripping it lands exactly where the kept group starts; a first byte
+/// that is one of those means there's no junk at all.
+fn strip_junk(m: &str) -> &str {
+    let first = m.as_bytes()[0];
+    if first.is_ascii_alphanumeric() || matches!(first, b'_' | b'(' | b'#' | b'&') {
+        return m;
+    }
+    RE_JUNK.find(m).map_or(m, |junk| &m[junk.end()..])
+}
+
 static RE_AMP: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(&#38;)|(&amp;)").expect("ampersand regex is valid"));
 
@@ -50,8 +69,19 @@ pub fn normalize(address: &str) -> Cow<'_, str> {
 ///
 /// Group 1 is the real token (leading junk consumed by the un-grouped
 /// prefix is discarded); group 2 is the standalone `#`/`&` alternative.
-/// Exactly one of the two participates in any given match.
+/// Exactly one of the two participates in any given match; see
+/// [`strip_junk`] for how it's recovered from the whole match.
 pub fn tokenize(address: &str) -> Vec<&str> {
+    RE_TOKENS
+        .find_iter(address)
+        .map(|m| strip_junk(m.as_str()))
+        .collect()
+}
+
+/// The original capture-group implementation, kept as the reference the
+/// fast path is tested against.
+#[cfg(test)]
+fn tokenize_with_captures(address: &str) -> Vec<&str> {
     RE_TOKENS
         .captures_iter(address)
         .filter_map(|caps| caps.get(1).or_else(|| caps.get(2)))
@@ -129,6 +159,52 @@ mod tests {
     #[test]
     fn fraction_fused_to_digit() {
         assert_eq!(toks("123\u{bd} Main St"), ["123½", "Main", "St"]);
+    }
+
+    /// `find_iter` + `strip_junk` must give exactly what the capture-group
+    /// version gives, on awkward prefixes (non-ASCII junk, ASCII junk,
+    /// combining marks, parens after junk) and on the whole parity corpus.
+    #[test]
+    fn find_iter_matches_captures() {
+        let awkward = [
+            "°abc",
+            "(°abc)",
+            "°(abc)",
+            "--12 Main",
+            "'O'Hare",
+            "½ Main",
+            "\u{301}123 Main",
+            "＿123 Main",
+            "#4 & 5",
+            "***",
+            "°",
+            "..(a",
+            "123\u{1f}Main St",
+            "",
+        ];
+        for s in awkward {
+            assert_eq!(tokenize(s), tokenize_with_captures(s), "for {s:?}");
+        }
+
+        #[derive(serde::Deserialize)]
+        struct Case {
+            input: String,
+        }
+        #[derive(serde::Deserialize)]
+        struct Corpus {
+            fixtures: Vec<Case>,
+        }
+        let corpus: Corpus =
+            serde_json::from_str(include_str!("../tests/corpus_fixtures.json")).unwrap();
+        for case in &corpus.fixtures {
+            let n = normalize(&case.input);
+            assert_eq!(
+                tokenize(&n),
+                tokenize_with_captures(&n),
+                "for {:?}",
+                case.input
+            );
+        }
     }
 
     /// Leading junk that isn't a fraction (arbitrary symbols) should still
