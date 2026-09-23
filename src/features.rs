@@ -21,6 +21,7 @@
 
 use crfs::Attribute;
 
+use crate::attr_cache;
 use crate::bounded_ids;
 use crate::lexicon::{DIRECTIONS, STREET_NAMES};
 
@@ -275,7 +276,8 @@ impl TokenFeatures {
     /// resolved straight to `(attr_id, weight)` pairs via `bounded_ids`.
     /// `prefix_idx` indexes `bounded_ids::PREFIXES` (0 = own, 1 = `previous:`,
     /// 2 = `next:`) and must agree with the string `prefix` used below.
-    fn encode_ids_into(&self, out: &mut Vec<(u32, f64)>, prefix_idx: usize) {
+    /// `free` is this token's [`FreeTextIds`].
+    fn encode_ids_into(&self, free: &FreeTextIds, out: &mut Vec<(u32, f64)>, prefix_idx: usize) {
         let t = &bounded_ids::TABLES;
         let prefix = bounded_ids::PREFIXES[prefix_idx];
 
@@ -286,8 +288,8 @@ impl TokenFeatures {
 
         // `None` here is upstream's `False`: a zero-weight attribute, dropped
         // for the same reason as in `push_fixed`.
-        if let Some(w) = &self.word {
-            push_slow(out, prefix, "word", w);
+        if self.word.is_some() {
+            push_present(out, free.word[prefix_idx]);
         }
 
         if let Some(z) = &self.trailing_zeros {
@@ -306,8 +308,8 @@ impl TokenFeatures {
             }
         }
 
-        if let Some(c) = &self.endsinpunc {
-            push_slow(out, prefix, "endsinpunc", c);
+        if self.endsinpunc.is_some() {
+            push_present(out, free.endsinpunc[prefix_idx]);
         }
 
         push_fixed(out, t.directional(prefix_idx), self.directional);
@@ -316,10 +318,34 @@ impl TokenFeatures {
     }
 }
 
+/// Ids of a token's two free-text features (`word`, `endsinpunc`) from all
+/// three viewpoints, found with one lookup of the bare value each rather
+/// than formatting and hashing `"{prefix}word:{value}"` three times.
+struct FreeTextIds {
+    word: attr_cache::ViewIds,
+    endsinpunc: attr_cache::ViewIds,
+}
+
+impl FreeTextIds {
+    fn of(features: &TokenFeatures) -> Self {
+        Self {
+            word: features
+                .word
+                .as_deref()
+                .map_or([None; 3], attr_cache::word_ids),
+            endsinpunc: features
+                .endsinpunc
+                .as_deref()
+                .map_or([None; 3], attr_cache::endsinpunc_ids),
+        }
+    }
+}
+
 /// Id-based equivalent of [`tokens_to_features`]; what `Parser::parse`
 /// actually calls.
 pub fn tokens_to_id_features(tokens: &[&str]) -> Vec<Vec<(u32, f64)>> {
     let base: Vec<TokenFeatures> = tokens.iter().map(|t| token_features(t)).collect();
+    let free: Vec<FreeTextIds> = base.iter().map(FreeTextIds::of).collect();
     let n = base.len();
     let t = &bounded_ids::TABLES;
 
@@ -327,7 +353,7 @@ pub fn tokens_to_id_features(tokens: &[&str]) -> Vec<Vec<(u32, f64)>> {
         .map(|i| {
             let mut ids = Vec::with_capacity(29);
 
-            base[i].encode_ids_into(&mut ids, 0);
+            base[i].encode_ids_into(&free[i], &mut ids, 0);
             if i == 0 {
                 push_present(&mut ids, t.address_start);
             }
@@ -335,13 +361,13 @@ pub fn tokens_to_id_features(tokens: &[&str]) -> Vec<Vec<(u32, f64)>> {
                 push_present(&mut ids, t.address_end);
             }
             if i > 0 {
-                base[i - 1].encode_ids_into(&mut ids, 1);
+                base[i - 1].encode_ids_into(&free[i - 1], &mut ids, 1);
                 if i == 1 {
                     push_present(&mut ids, t.previous_address_start);
                 }
             }
             if i + 1 < n {
-                base[i + 1].encode_ids_into(&mut ids, 2);
+                base[i + 1].encode_ids_into(&free[i + 1], &mut ids, 2);
                 if i + 2 == n {
                     push_present(&mut ids, t.next_address_end);
                 }
