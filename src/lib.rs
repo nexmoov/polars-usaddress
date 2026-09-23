@@ -150,6 +150,54 @@ pub enum Error {
     },
 }
 
+/// One slot per entry of [`LABELS`], in the same order: the collapsed
+/// component text for that label, or `None` if the address had none.
+pub type Components = [Option<String>; LABELS.len()];
+
+/// Model label id -> position in [`LABELS`], precomputed once so collapsing
+/// a row is array indexing rather than string compares and hashing.
+struct LabelIndex {
+    /// `LABELS` index of each model label.
+    base: Vec<usize>,
+    /// `LABELS` index of its `Second*` variant, for labels whose name contains
+    /// "StreetName" (upstream's substring test, which also catches
+    /// `StreetNamePreType` and friends).
+    second: Vec<Option<usize>>,
+    address_number: u32,
+    usps_box_id: u32,
+    intersection_separator: u32,
+}
+
+static LABEL_INDEX: LazyLock<LabelIndex> = LazyLock::new(|| {
+    let names: Vec<&str> = (0..MODEL.num_labels())
+        .map(|id| MODEL.label_name(id))
+        .collect();
+    let in_labels = |name: &str| {
+        LABELS
+            .iter()
+            .position(|l| *l == name)
+            .unwrap_or_else(|| panic!("label {name:?} missing from LABELS"))
+    };
+    let model_id = |name: &str| {
+        MODEL
+            .to_label_id(name)
+            .unwrap_or_else(|| panic!("model has no {name:?} label"))
+    };
+    LabelIndex {
+        base: names.iter().map(|n| in_labels(n)).collect(),
+        second: names
+            .iter()
+            .map(|n| {
+                n.contains("StreetName")
+                    .then(|| in_labels(&format!("Second{n}")))
+            })
+            .collect(),
+        address_number: model_id("AddressNumber"),
+        usps_box_id: model_id("USPSBoxID"),
+        intersection_separator: model_id("IntersectionSeparator"),
+    }
+});
+
 /// A reusable tagger. Constructing one allocates working buffers, so create it
 /// **once per chunk/thread** and reuse it across rows -- doing it per row gives
 /// back a large share of the speedup this crate exists for.
@@ -166,12 +214,12 @@ impl Parser {
         })
     }
 
-    /// Low-level parse: one label per token, in order. Mirrors `usaddress.parse`.
-    pub fn parse(&mut self, address: &str) -> Result<Vec<(String, String)>, Error> {
-        let normalised = tokenize::normalize(address);
-        let tokens = tokenize::tokenize(&normalised);
+    /// Tokenise an already-normalised address and label it: tokens borrow
+    /// from `normalised`, labels are model label ids.
+    fn label<'a>(&mut self, normalised: &'a str) -> (Vec<&'a str>, Vec<u32>) {
+        let tokens = tokenize::tokenize(normalised);
         if tokens.is_empty() {
-            return Ok(Vec::new());
+            return (tokens, Vec::new());
         }
 
         #[cfg(feature = "bench-timing")]
@@ -192,18 +240,30 @@ impl Parser {
             std::sync::atomic::Ordering::Relaxed,
         );
 
-        Ok(tokens
-            .iter()
-            .zip(label_ids.iter())
-            .map(|(t, &lid)| ((*t).to_string(), MODEL.label_name(lid).to_string()))
-            .collect())
+        (tokens, label_ids)
+    }
+
+    /// Low-level parse: one label per token, in order. Mirrors `usaddress.parse`.
+    pub fn parse(&mut self, address: &str) -> Result<Vec<(String, String)>, Error> {
+        let normalised = tokenize::normalize(address);
+        let (tokens, label_ids) = self.label(&normalised);
+        Ok(labelled_pairs(&tokens, &label_ids))
     }
 
     /// Collapse consecutive same-labelled tokens into one component per label,
     /// and classify the address. Mirrors `usaddress.tag`.
     pub fn tag(&mut self, address: &str) -> Result<(HashMap<String, String>, AddressType), Error> {
-        let parsed = self.parse(address)?;
-        collapse(parsed)
+        let (components, address_type) = self.tag_components(address)?;
+        Ok((to_map(components), address_type))
+    }
+
+    /// Same result as [`Parser::tag`], as a fixed array indexed like
+    /// [`LABELS`] instead of a `HashMap`. What the Polars plugin uses: no
+    /// hashing or label-string allocation per row.
+    pub fn tag_components(&mut self, address: &str) -> Result<(Components, AddressType), Error> {
+        let normalised = tokenize::normalize(address);
+        let (tokens, label_ids) = self.label(&normalised);
+        collapse(&tokens, &label_ids)
     }
 
     /// Like [`Parser::parse`], but each token also carries the CRF's marginal
@@ -249,25 +309,28 @@ impl Parser {
         &mut self,
         address: &str,
     ) -> Result<(HashMap<String, String>, AddressType, f64), Error> {
+        let (components, address_type, confidence) =
+            self.tag_components_with_confidence(address)?;
+        Ok((to_map(components), address_type, confidence))
+    }
+
+    /// [`Parser::tag_with_confidence`], returning [`Components`] like
+    /// [`Parser::tag_components`].
+    pub fn tag_components_with_confidence(
+        &mut self,
+        address: &str,
+    ) -> Result<(Components, AddressType, f64), Error> {
         let normalised = tokenize::normalize(address);
         let tokens = tokenize::tokenize(&normalised);
         if tokens.is_empty() {
-            let (tagged, address_type) = collapse(Vec::new())?;
-            return Ok((tagged, address_type, 1.0));
+            let (components, address_type) = collapse(&[], &[])?;
+            return Ok((components, address_type, 1.0));
         }
 
         let id_seq = features::tokens_to_id_features(&tokens);
         let marginals = self.tagger.tag_ids_with_marginals(&id_seq);
-        let sequence_confidence = marginals.sequence_probability();
-
-        let parsed: Vec<(String, String)> = tokens
-            .iter()
-            .zip(marginals.labels.iter())
-            .map(|(t, &lid)| ((*t).to_string(), MODEL.label_name(lid).to_string()))
-            .collect();
-
-        let (tagged, address_type) = collapse(parsed)?;
-        Ok((tagged, address_type, sequence_confidence))
+        let (components, address_type) = collapse(&tokens, &marginals.labels)?;
+        Ok((components, address_type, marginals.sequence_probability()))
     }
 }
 
@@ -283,64 +346,71 @@ pub fn tag(address: &str) -> Result<(HashMap<String, String>, AddressType), Erro
     Parser::new()?.tag(address)
 }
 
-/// Shared by [`Parser::tag`]: collapse a token/label sequence into components.
-fn collapse(
-    parsed: Vec<(String, String)>,
-) -> Result<(HashMap<String, String>, AddressType), Error> {
-    let mut components: Vec<(String, Vec<String>)> = Vec::new();
-    let mut last_label: Option<String> = None;
+fn labelled_pairs(tokens: &[&str], label_ids: &[u32]) -> Vec<(String, String)> {
+    tokens
+        .iter()
+        .zip(label_ids)
+        .map(|(t, &lid)| ((*t).to_string(), MODEL.label_name(lid).to_string()))
+        .collect()
+}
+
+fn to_map(components: Components) -> HashMap<String, String> {
+    LABELS
+        .iter()
+        .zip(components)
+        .filter_map(|(label, text)| text.map(|text| ((*label).to_string(), text)))
+        .collect()
+}
+
+/// Collapse a token/label-id sequence into components. Port of the body of
+/// `usaddress.tag`.
+fn collapse(tokens: &[&str], label_ids: &[u32]) -> Result<(Components, AddressType), Error> {
+    let ix = &*LABEL_INDEX;
+    let mut components: Components = std::array::from_fn(|_| None);
+    let mut last: Option<usize> = None;
     let mut is_intersection = false;
     let mut saw_address_number = false;
     let mut saw_usps_box_id = false;
 
-    for (token, raw_label) in &parsed {
-        if raw_label == "IntersectionSeparator" {
+    for (&token, &lid) in tokens.iter().zip(label_ids) {
+        if lid == ix.intersection_separator {
             is_intersection = true;
         }
-        // Everything after the separator that is street-name-ish belongs to the
-        // second street. Note upstream tests `"StreetName" in label`, which is a
-        // substring test -- it also catches StreetNamePreType and friends.
-        let label = if raw_label.contains("StreetName") && is_intersection {
-            format!("Second{raw_label}")
-        } else {
-            raw_label.clone()
+        // Everything after the separator that is street-name-ish belongs to
+        // the second street.
+        let idx = match ix.second[lid as usize] {
+            Some(second) if is_intersection => second,
+            _ => ix.base[lid as usize],
         };
+        // Upstream checks these on the labels before any tag mapping; neither
+        // can be Second-prefixed, so the raw model label is the same thing.
+        saw_address_number |= lid == ix.address_number;
+        saw_usps_box_id |= lid == ix.usps_box_id;
 
-        if raw_label == "AddressNumber" {
-            saw_address_number = true;
+        match &mut components[idx] {
+            Some(text) if last == Some(idx) => {
+                text.push(' ');
+                text.push_str(token);
+            }
+            slot @ None => *slot = Some(token.to_string()),
+            Some(_) => {
+                return Err(Error::RepeatedLabel {
+                    label: LABELS[idx].to_string(),
+                    parsed: labelled_pairs(tokens, label_ids),
+                });
+            }
         }
-        if raw_label == "USPSBoxID" {
-            saw_usps_box_id = true;
-        }
-
-        if Some(&label) == last_label.as_ref() {
-            components
-                .last_mut()
-                .expect("last_label implies a component exists")
-                .1
-                .push(token.clone());
-        } else if !components.iter().any(|(l, _)| *l == label) {
-            components.push((label.clone(), vec![token.clone()]));
-        } else {
-            return Err(Error::RepeatedLabel {
-                label,
-                parsed: parsed.clone(),
-            });
-        }
-
-        last_label = Some(label);
+        last = Some(idx);
     }
 
-    let tagged: HashMap<String, String> = components
-        .into_iter()
-        .map(|(label, tokens)| {
-            let joined = tokens.join(" ");
-            let trimmed = joined.trim_matches(|c| c == ' ' || c == ',' || c == ';');
-            (label, trimmed.to_string())
-        })
-        .collect();
+    // Upstream joins with " " and then strips " ,;" from both ends.
+    for text in components.iter_mut().flatten() {
+        let trimmed = text.trim_matches([' ', ',', ';']);
+        if trimmed.len() != text.len() {
+            *text = trimmed.to_string();
+        }
+    }
 
-    // Upstream checks the *original* labels, before Second-prefixing.
     let address_type = if saw_address_number && !is_intersection {
         AddressType::StreetAddress
     } else if is_intersection && !saw_address_number {
@@ -351,7 +421,7 @@ fn collapse(
         AddressType::Ambiguous
     };
 
-    Ok((tagged, address_type))
+    Ok((components, address_type))
 }
 
 #[cfg(test)]
