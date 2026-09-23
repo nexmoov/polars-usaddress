@@ -1,8 +1,23 @@
-"""Generate golden parity fixtures from the reference Python usaddress."""
+"""Generate golden parity fixtures from the reference Python usaddress.
+
+Writes two files into tests/:
+
+* fixtures.json        -- the hand-picked edge cases below, with attributes
+* corpus_fixtures.json -- every address in tools/bench_corpus.json (the
+  notebook's seeded synthetic corpus), outputs only, compact
+
+    uv run python tools/gen_fixtures.py
+"""
 import json
 from importlib.metadata import version
+from pathlib import Path
+
 import usaddress
 import pycrfsuite
+
+ROOT = Path(__file__).resolve().parent.parent
+TESTS = ROOT / "tests"
+BENCH_CORPUS = ROOT / "tools" / "bench_corpus.json"
 
 ADDRESSES = [
     # --- ordinary street addresses ---
@@ -119,10 +134,37 @@ out = {
     "note": "Golden vectors from reference Python usaddress. Do not hand-edit.",
     "fixtures": fixtures,
 }
-with open("fixtures.json", "w") as f:
+with open(TESTS / "fixtures.json", "w") as f:
     json.dump(out, f, indent=2, ensure_ascii=False)
 
 n_attrs = sum(len(a) for e in fixtures for a in e["attributes"])
-print(f"{len(fixtures)} addresses, "
+print(f"fixtures.json: {len(fixtures)} addresses, "
       f"{sum(len(e['tokens']) for e in fixtures)} tokens, "
       f"{n_attrs} attributes")
+
+
+# --- corpus fixtures: outputs only, one compact entry per address ---------
+#
+# `parse` is [[token, label], ...]. `tag`/`address_type` are null exactly when
+# upstream raised RepeatedLabelError.
+corpus_entries = []
+for addr in json.loads(BENCH_CORPUS.read_text()):
+    entry = {"input": addr, "parse": [list(p) for p in usaddress.parse(addr)]}
+    try:
+        tagged, addr_type = usaddress.tag(addr)
+        entry["tag"], entry["address_type"] = dict(tagged), addr_type
+    except usaddress.RepeatedLabelError:
+        entry["tag"], entry["address_type"] = None, None
+    corpus_entries.append(entry)
+
+corpus_out = {
+    "usaddress_version": version("usaddress"),
+    "note": "Golden outputs for tools/bench_corpus.json. Do not hand-edit.",
+    "fixtures": corpus_entries,
+}
+with open(TESTS / "corpus_fixtures.json", "w") as f:
+    json.dump(corpus_out, f, ensure_ascii=False, separators=(",", ":"))
+    f.write("\n")
+
+print(f"corpus_fixtures.json: {len(corpus_entries)} addresses, "
+      f"{sum(e['tag'] is None for e in corpus_entries)} RepeatedLabelError")
