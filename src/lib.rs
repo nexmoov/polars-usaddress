@@ -250,6 +250,22 @@ impl Parser {
         Ok(labelled_pairs(&tokens, &label_ids))
     }
 
+    /// [`Parser::parse`] with each label as a `&'static str` pointing into the
+    /// embedded model, so the plugin doesn't allocate one `String` per label.
+    #[cfg(feature = "polars-plugin")]
+    pub(crate) fn parse_static(
+        &mut self,
+        address: &str,
+    ) -> Result<Vec<(String, &'static str)>, Error> {
+        let normalised = tokenize::normalize(address);
+        let (tokens, label_ids) = self.label(&normalised);
+        Ok(tokens
+            .iter()
+            .zip(&label_ids)
+            .map(|(t, &lid)| ((*t).to_string(), MODEL.label_name(lid)))
+            .collect())
+    }
+
     /// Collapse consecutive same-labelled tokens into one component per label,
     /// and classify the address. Mirrors `usaddress.tag`.
     pub fn tag(&mut self, address: &str) -> Result<(HashMap<String, String>, AddressType), Error> {
@@ -274,6 +290,19 @@ impl Parser {
         &mut self,
         address: &str,
     ) -> Result<Vec<(String, String, f64)>, Error> {
+        Ok(self
+            .parse_with_confidence_static(address)?
+            .into_iter()
+            .map(|(t, l, c)| (t, l.to_string(), c))
+            .collect())
+    }
+
+    /// [`Parser::parse_with_confidence`] with `&'static str` labels, like
+    /// [`Parser::parse_static`].
+    pub(crate) fn parse_with_confidence_static(
+        &mut self,
+        address: &str,
+    ) -> Result<Vec<(String, &'static str, f64)>, Error> {
         let normalised = tokenize::normalize(address);
         let tokens = tokenize::tokenize(&normalised);
         if tokens.is_empty() {
@@ -289,11 +318,7 @@ impl Parser {
             .map(|(i, t)| {
                 let label_id = marginals.labels[i];
                 let confidence = marginals.marginal(i, label_id);
-                (
-                    (*t).to_string(),
-                    MODEL.label_name(label_id).to_string(),
-                    confidence,
-                )
+                ((*t).to_string(), MODEL.label_name(label_id), confidence)
             })
             .collect())
     }

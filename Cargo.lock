@@ -1608,6 +1608,7 @@ dependencies = [
  "crfs",
  "phf 0.11.3",
  "polars",
+ "polars-arrow",
  "polars-core",
  "pyo3",
  "pyo3-polars",

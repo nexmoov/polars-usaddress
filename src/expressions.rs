@@ -8,7 +8,9 @@
 //!   ergonomic one: `.struct.field("ZipCode")` and you are done.
 
 use polars::prelude::*;
-use polars_core::chunked_array::builder::list::AnonymousOwnedListBuilder;
+use polars_arrow::array::ListArray;
+use polars_arrow::bitmap::Bitmap;
+use polars_arrow::offset::OffsetsBuffer;
 use pyo3_polars::derive::polars_expr;
 use rayon::prelude::*;
 
@@ -58,6 +60,29 @@ fn label_columns<R>(
             .into_series()
         })
         .collect()
+}
+
+/// Wrap one flat `inner` column into a list column, row `i` being
+/// `inner[offsets[i]..offsets[i + 1]]`, or null where `validity[i]` is false.
+/// Zero-copy over `inner`: one Arrow `ListArray<i64>` over its single chunk.
+fn list_column(inner: Series, offsets: Vec<i64>, validity: Vec<bool>) -> PolarsResult<Series> {
+    let dtype = DataType::List(Box::new(inner.dtype().clone()));
+    let inner = inner.rechunk();
+    let values = inner.chunks()[0].clone();
+    let arrow_dtype = ListArray::<i64>::default_datatype(values.dtype().clone());
+    let validity = (!validity.iter().all(|v| *v)).then(|| Bitmap::from_iter(validity));
+    let array = ListArray::<i64>::new(
+        arrow_dtype,
+        OffsetsBuffer::try_from(offsets)?,
+        values,
+        validity,
+    );
+    // SAFETY: `values` is `inner`'s own physical chunk and `dtype` is `inner`'s
+    // own dtype wrapped in `List`, so the array and the declared dtype agree.
+    let ca = unsafe {
+        ListChunked::from_chunks_and_dtype("address".into(), vec![Box::new(array)], dtype)
+    };
+    Ok(ca.into_series())
 }
 
 fn label_fields() -> Vec<Field> {
@@ -170,15 +195,15 @@ fn parse_address(inputs: &[Series]) -> PolarsResult<Series> {
 
     let parsed_rows = par_map_rows(ca, |parser, s| {
         parser
-            .parse(s)
+            .parse_static(s)
             .map(Some)
             .map_err(|e| polars_err!(ComputeError: "address parsing failed: {e}"))
     })?;
 
     // Flat token/label buffers plus per-row offsets, assembled into a
-    // ListChunked at the end -- avoids building one Series per row.
+    // ListChunked at the end -- no Series per row.
     let mut tokens: Vec<String> = Vec::new();
-    let mut labels: Vec<String> = Vec::new();
+    let mut labels: Vec<&'static str> = Vec::new();
     let mut offsets: Vec<i64> = Vec::with_capacity(ca.len() + 1);
     let mut validity: Vec<bool> = Vec::with_capacity(ca.len());
     offsets.push(0);
@@ -208,21 +233,7 @@ fn parse_address(inputs: &[Series]) -> PolarsResult<Series> {
     )?
     .into_series();
 
-    // polars-core >=0.55.2 dropped `ListChunked::from_iter_and_offsets`, so a
-    // list column is built via a builder that takes one Series per row --
-    // `inner` stays one flat struct Series for the whole column, sliced here.
-    let mut builder =
-        AnonymousOwnedListBuilder::new("address".into(), ca.len(), Some(inner.dtype().clone()));
-    for (i, valid) in validity.iter().enumerate() {
-        if *valid {
-            let start = offsets[i];
-            let len = (offsets[i + 1] - start) as usize;
-            builder.append_series(&inner.slice(start, len))?;
-        } else {
-            builder.append_null();
-        }
-    }
-    Ok(builder.finish().into_series())
+    list_column(inner, offsets, validity)
 }
 
 // ------------------------------------------------------- parse_address_with_confidence
@@ -248,14 +259,14 @@ fn parse_address_with_confidence(inputs: &[Series]) -> PolarsResult<Series> {
 
     let parsed_rows = par_map_rows(ca, |parser, s| {
         parser
-            .parse_with_confidence(s)
+            .parse_with_confidence_static(s)
             .map(Some)
             .map_err(|e| polars_err!(ComputeError: "address parsing failed: {e}"))
     })?;
 
     // Same flat-buffers-plus-offsets shape as `parse_address`.
     let mut tokens: Vec<String> = Vec::new();
-    let mut labels: Vec<String> = Vec::new();
+    let mut labels: Vec<&'static str> = Vec::new();
     let mut confidences: Vec<f64> = Vec::new();
     let mut offsets: Vec<i64> = Vec::with_capacity(ca.len() + 1);
     let mut validity: Vec<bool> = Vec::with_capacity(ca.len());
@@ -289,16 +300,5 @@ fn parse_address_with_confidence(inputs: &[Series]) -> PolarsResult<Series> {
     )?
     .into_series();
 
-    let mut builder =
-        AnonymousOwnedListBuilder::new("address".into(), ca.len(), Some(inner.dtype().clone()));
-    for (i, valid) in validity.iter().enumerate() {
-        if *valid {
-            let start = offsets[i];
-            let len = (offsets[i + 1] - start) as usize;
-            builder.append_series(&inner.slice(start, len))?;
-        } else {
-            builder.append_null();
-        }
-    }
-    Ok(builder.finish().into_series())
+    list_column(inner, offsets, validity)
 }
