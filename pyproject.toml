@@ -12,6 +12,11 @@ dependencies = [
 ]
 
 [tool.maturin]
+# Build optimised even when `-r`/`--release` is forgotten: a plain
+# `maturin develop` otherwise makes a debug build, ~20x slower, which is easy
+# to benchmark by mistake.
+# opt out for a quick debug build with `maturin develop --profile dev`.
+profile = "release"
 features = ["pyo3/extension-module"]
 module-name = "polars_usaddress._internal"
 python-source = "python"

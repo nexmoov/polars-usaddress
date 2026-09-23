@@ -14,6 +14,7 @@ global pool once, at first use, from RAYON_NUM_THREADS.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import statistics
@@ -87,9 +88,45 @@ def plugin(fn_name: str, threads: int | None) -> float:
     return float(out.stdout.strip().splitlines()[-1])
 
 
+BENCH_SPLIT = ROOT / "target" / "release" / "examples" / "bench_split"
+
+
+def plugin_library() -> Path | None:
+    """The compiled plugin the child processes will load, found without importing it."""
+    spec = importlib.util.find_spec("polars_usaddress")
+    if spec is None or spec.origin is None:
+        return None
+    return next(iter(sorted(Path(spec.origin).parent.glob("_internal*"))), None)
+
+
+def newest_source_mtime() -> float:
+    sources = [ROOT / "Cargo.toml", ROOT / "Cargo.lock"]
+    sources += (ROOT / "src").rglob("*.rs")
+    sources += (ROOT / "vendor" / "crfs" / "src").rglob("*.rs")
+    return max(p.stat().st_mtime for p in sources if p.exists())
+
+
+def sanity_warnings(rust: float | None, plugin_1t: float, artifacts: dict[str, Path | None]) -> list[str]:
+    """Catch the two ways this benchmark has produced wrong numbers before:
+    a debug build of the plugin, and a build older than the source."""
+    warnings = []
+    # One thread, same parser: the plugin should be close to the plain Rust loop.
+    if rust is not None and plugin_1t > 3 * rust:
+        warnings.append(
+            f"plugin tag_address on 1 thread is {plugin_1t / rust:.1f}x slower than the Rust "
+            "loop running the same parser. It is almost certainly a debug build: rebuild with "
+            "`uv run maturin develop -r`."
+        )
+    newest = newest_source_mtime()
+    for name, path in artifacts.items():
+        if path is not None and path.stat().st_mtime < newest:
+            warnings.append(f"{name} ({path.relative_to(ROOT)}) is older than the Rust source; rebuild it.")
+    return warnings
+
+
 def rust_parser_loop(path: Path) -> float | None:
     """Plain `Parser::tag` loop, single thread, no Polars. Needs bench_split built."""
-    exe = ROOT / "target" / "release" / "examples" / "bench_split"
+    exe = BENCH_SPLIT
     if not exe.exists():
         return None
     runs = []
@@ -120,6 +157,22 @@ def main() -> None:
     print(f"{'engine':<36}{'seconds':>10}{'addrs/s':>14}{'vs python':>11}")
     for name, t in rows:
         print(f"{name:<36}{t:>10.4f}{n / t:>14,.0f}{py / t:>10.1f}x")
+
+    plugin_1t = dict(rows)["plugin tag_address, 1 thread"]
+    artifacts = {
+        "plugin": plugin_library(),
+        "bench_split": BENCH_SPLIT if BENCH_SPLIT.exists() else None,
+    }
+    warnings = sanity_warnings(rust, plugin_1t, artifacts)
+    if rust is None:
+        warnings.append(
+            "no Rust loop row: build it with "
+            "`cargo build --release --no-default-features --example bench_split`."
+        )
+    for w in warnings:
+        print(f"\n*** WARNING: {w}", file=sys.stderr)
+    if warnings:
+        print("\n*** These numbers are probably not trustworthy.", file=sys.stderr)
 
 
 if __name__ == "__main__":
