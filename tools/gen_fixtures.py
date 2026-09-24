@@ -14,13 +14,14 @@ outputs for the same inputs, and needs nothing that isn't committed. Only if
 it doesn't exist yet are inputs taken from tools/bench_corpus.json, which the
 benchmark notebook writes (gitignored).
 """
+
 import json
 import sys
 from importlib.metadata import version
 from pathlib import Path
 
-import usaddress
 import pycrfsuite
+import usaddress
 
 ROOT = Path(__file__).resolve().parent.parent
 TESTS = ROOT / "tests"
@@ -38,6 +39,7 @@ def corpus_inputs() -> list[str]:
         f"{BENCH_CORPUS.relative_to(ROOT)} exists. Run the benchmark notebook's "
         "corpus-export cell to create the latter."
     )
+
 
 ADDRESSES = [
     # --- ordinary street addresses ---
@@ -104,7 +106,7 @@ ADDRESSES = [
     "#",
     "&",
     "123",
-    # --- RepeatedLabelError cases (Python raises; plugin must have a policy) ---
+    # --- RepeatedLabelError cases (upstream raises; the plugin nulls the row) ---
     "123 Main St, 456 Oak Ave, Chicago IL",
     "123 Main St Chicago IL 123 Main St Chicago IL",
     "Main St and Oak Ave and Elm St",
@@ -128,9 +130,7 @@ for addr in ADDRESSES:
     if tokens:
         feats = usaddress.tokens2features(tokens)
         entry["attributes"] = encode(feats)
-        entry["parse"] = [
-            {"token": t, "label": l} for t, l in usaddress.parse(addr)
-        ]
+        entry["parse"] = [{"token": t, "label": l} for t, l in usaddress.parse(addr)]
         try:
             tagged, addr_type = usaddress.tag(addr)
             entry["tag"] = dict(tagged)
@@ -158,9 +158,11 @@ with open(TESTS / "fixtures.json", "w") as f:
     json.dump(out, f, indent=2, ensure_ascii=False)
 
 n_attrs = sum(len(a) for e in fixtures for a in e["attributes"])
-print(f"fixtures.json: {len(fixtures)} addresses, "
-      f"{sum(len(e['tokens']) for e in fixtures)} tokens, "
-      f"{n_attrs} attributes")
+print(
+    f"fixtures.json: {len(fixtures)} addresses, "
+    f"{sum(len(e['tokens']) for e in fixtures)} tokens, "
+    f"{n_attrs} attributes"
+)
 
 
 # --- corpus fixtures: outputs only, one compact entry per address ---------
@@ -179,12 +181,14 @@ for addr in corpus_inputs():
 
 corpus_out = {
     "usaddress_version": version("usaddress"),
-    "note": "Golden outputs for tools/bench_corpus.json. Do not hand-edit.",
+    "note": "Golden upstream outputs for the seeded synthetic benchmark corpus. Do not hand-edit.",
     "fixtures": corpus_entries,
 }
 with open(TESTS / "corpus_fixtures.json", "w") as f:
     json.dump(corpus_out, f, ensure_ascii=False, separators=(",", ":"))
     f.write("\n")
 
-print(f"corpus_fixtures.json: {len(corpus_entries)} addresses, "
-      f"{sum(e['tag'] is None for e in corpus_entries)} RepeatedLabelError")
+print(
+    f"corpus_fixtures.json: {len(corpus_entries)} addresses, "
+    f"{sum(e['tag'] is None for e in corpus_entries)} RepeatedLabelError"
+)

@@ -12,22 +12,24 @@ if TYPE_CHECKING:
     from polars._typing import IntoExprColumn
 
 __all__ = [
-    "tag_address",
-    "tag_address_with_confidence",
-    "parse_address",
-    "parse_address_with_confidence",
     "LABELS",
     "UPSTREAM_VERSION",
+    "parse_address",
+    "parse_address_with_confidence",
+    "tag_address",
+    "tag_address_with_confidence",
 ]
 
 LIB = Path(__file__).parent
 
+#: Mirrors `UPSTREAM_VERSION` in `src/lib.rs` (checked by tests/test_plugin.py).
 UPSTREAM_VERSION = "0.5.16"
 
 #: Every field `tag_address` can produce: the 29 labels the embedded CRF
 #: model can actually emit, plus the 7 `Second*` variants that appear only
 #: on the far side of an intersection. Kept in sync by hand with the Rust
-#: `LABELS` constant in `src/lib.rs` -- update both together.
+#: `LABELS` constant in `src/lib.rs` -- update both together;
+#: tests/test_plugin.py fails if they drift.
 #:
 #: Deliberately *not* the same as upstream's own `usaddress.LABELS`, which
 #: only lists 26 labels and omits three the model can genuinely produce:

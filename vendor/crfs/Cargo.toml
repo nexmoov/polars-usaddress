@@ -1,6 +1,7 @@
 # Vendored from crates.io crfs 0.4.1 (MIT, messense/crfs-rs) — see VENDORED.md.
-# Inference-only: the training module, its dependencies, and upstream tests/benches
-# are removed; correctness is enforced by this repo's parity and equivalence suites.
+# Inference-only: the training module, its dependencies, and upstream's tests/ and
+# benches/ directories are removed; correctness is enforced by this repo's parity and
+# equivalence suites.
 
 [package]
 publish = false
@@ -21,3 +22,8 @@ anyhow = "1.0"
 bitflags = "2.10.0"
 bstr = "1.0.0"
 cqdb = "0.7"
+
+# Kept close to upstream, so it carries API this repo never calls (training-side
+# `dataset`, `MarginalState::marginal`); don't warn about it.
+[lints.rust]
+dead_code = "allow"

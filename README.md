@@ -23,7 +23,9 @@ in `vendor/crfs` — is vendored, not authored, and honestly opaque to the devs 
 way most people's dependencies are: I don't understand crfsuite's internals,
 
 The outputs are tested by:
-- A differential test against real Python `usaddress` (golden vectors captured by `tools/gen_fixtures.py`, replayed in `tests/parity.rs`)
+- Differential tests against real Python `usaddress`: golden vectors captured by `tools/gen_fixtures.py`
+  (hand-picked edge cases plus a 20k-address synthetic corpus), replayed through the Rust API in
+  `tests/parity.rs` and through the Polars plugin in `tests/test_plugin.py`
 - An exhaustive equivalence test between this crate's two feature-extraction paths (`id_features_match_string_features_exactly` in `src/features.rs`)
 
 If something looks wrong, issues and contributions are very welcome.
@@ -42,6 +44,10 @@ df.with_columns(parsed=ua.tag_address("address")).unnest("parsed")
 `tag_address` returns a struct with one nullable string field per component
 (see `ua.LABELS`) plus `address_type`. `parse_address` returns the raw
 `list[struct[{token, label}]]` labelling when you need order and repetition.
+
+`tag_address_with_confidence` and `parse_address_with_confidence` return the
+same, plus the CRF's confidence (`sequence_confidence` per address, or
+`confidence` per token). They cost an extra forward-backward pass per row.
 
 The plugin parses rows in parallel on its own thread pool, sized like Polars'
 own: `POLARS_MAX_THREADS` if set, otherwise one thread per core.
@@ -68,17 +74,18 @@ index *n*−2.
 
 Getting any of this wrong does not raise — it silently degrades parses. So the
 encoder was differential-tested against the reference implementation before any
-Rust was written, and `tests/parity.rs` replays golden vectors (`tools/gen_fixtures.py`,
-currently 40 addresses covering ordinary addresses, intersections, PO boxes,
-punctuation/tokenizer edge cases, unicode, and `RepeatedLabelError` cases)
-captured from it.
+Rust was written, and `tests/parity.rs` replays golden vectors captured from it
+(`tools/gen_fixtures.py`: 50 hand-picked addresses covering ordinary addresses,
+intersections, PO boxes, punctuation/tokenizer edge cases, unicode, and
+`RepeatedLabelError` cases, plus upstream's outputs on a 20k-address synthetic corpus).
 
 ## Regenerating after an upstream bump
 
 ```bash
-pip install --upgrade usaddress
-python tools/gen_fixtures.py     # refresh golden vectors; confirms the encoding still holds
-cp "$(python -c 'import usaddress,os;print(usaddress.MODEL_PATH)')" models/
+uv lock --upgrade-package usaddress && uv sync
+uv run python tools/gen_lexicon.py    # regenerate src/lexicon.rs
+uv run python tools/gen_fixtures.py   # refresh golden vectors; confirms the encoding still holds
+cp "$(uv run python -c 'import usaddress;print(usaddress.MODEL_PATH)')" models/
 ```
 
 The model file and `src/lexicon.rs` are versioned **together** — the feature
@@ -88,8 +95,12 @@ code and the weights must agree. Bump `UPSTREAM_VERSION` in `src/lib.rs` and
 ## Build
 
 ```bash
-maturin develop --release    # --release matters; debug builds are ~20x slower
-cargo test --no-default-features   # parity suite, no Python needed
+uv run maturin develop --release   # --release matters; debug builds are ~20x slower
+cargo test --no-default-features   # Rust unit + parity tests, no Python needed
+make test                          # the above, plus the plugin tests and vendor/crfs's own
+make check-rust                    # clippy + rustfmt check
+make bench                         # release builds, then per-core throughput vs. Python
+make format                        # rustfmt + ruff
 ```
 
 Requires Rust 1.98+ (edition 2024).

@@ -1,4 +1,5 @@
-"""Worker function for the multiprocessing benchmark in `benchmark.ipynb`.
+"""Worker function for the notebook's multiprocessing benchmark
+(`benchmark_tagging_python_vs_rust.ipynb`).
 
 This has to live in its own importable module rather than a notebook cell:
 `ProcessPoolExecutor`'s default "spawn" start method (macOS/Windows) pickles
