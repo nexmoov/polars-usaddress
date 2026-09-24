@@ -23,25 +23,37 @@
 //! `\p{L} + \p{N} + \p{M} + \p{Pc}` (using `\p{N}`, the general Number
 //! category covering `Nd`/`Nl`/`No` together, not just `Nd`). Because the
 //! `regex` crate has no lookaround, the "junk to skip" and "token to keep"
-//! have to be two different parts of the same match: a non-capturing prefix
-//! that consumes leading junk (dropped), followed by a capturing group for
-//! the real token (kept). `[#&]` still needs its own capture group so the
-//! two alternatives can be told apart after the fact.
+//! are two parts of the same match: an un-grouped prefix that consumes
+//! leading junk, then group 1 for the real token, with `[#&]` as group 2.
+//! [`tokenize`] doesn't ask for the groups (that forces the regex crate's
+//! slower engine); it takes the whole match and strips the junk prefix
+//! itself, see [`strip_junk`].
 
 use regex::Regex;
 use std::borrow::Cow;
 use std::sync::LazyLock;
 
+/// Python's `\w`, spelled out (see the module doc for why not `\w`).
+const WORD: &str = r"\p{L}\p{N}\p{M}\p{Pc}";
+
+/// Leading junk: anything that neither starts a token nor separates tokens.
+/// Shared by `RE_TOKENS` and `RE_JUNK` so the two can't drift apart.
+fn junk_class() -> String {
+    format!(r"[^\s,;#&(){WORD}]")
+}
+
 static RE_TOKENS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"[^\s,;#&()\p{L}\p{N}\p{M}\p{Pc}]*(\(*[\p{L}\p{N}\p{M}\p{Pc}][^\s,;#&()]*[.,;)\n]*)|([#&])")
-        .expect("tokenizer regex is valid")
+    let junk = junk_class();
+    Regex::new(&format!(
+        r"{junk}*(\(*[{WORD}][^\s,;#&()]*[.,;)\n]*)|([#&])"
+    ))
+    .expect("tokenizer regex is valid")
 });
 
 /// The leading-junk prefix of an `RE_TOKENS` match: exactly its first,
 /// un-grouped part.
-static RE_JUNK: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^[^\s,;#&()\p{L}\p{N}\p{M}\p{Pc}]+").expect("junk regex is valid")
-});
+static RE_JUNK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(&format!("^{}+", junk_class())).expect("junk regex is valid"));
 
 /// Group 1 or 2 of an `RE_TOKENS` match, recovered from the whole match
 /// without asking the regex for capture groups (which forces its slower
@@ -65,12 +77,9 @@ pub fn normalize(address: &str) -> Cow<'_, str> {
     RE_AMP.replace_all(address, "&")
 }
 
-/// Split an (already [`normalize`]d) address string into tokens.
-///
-/// Group 1 is the real token (leading junk consumed by the un-grouped
-/// prefix is discarded); group 2 is the standalone `#`/`&` alternative.
-/// Exactly one of the two participates in any given match; see
-/// [`strip_junk`] for how it's recovered from the whole match.
+/// Split an (already [`normalize`]d) address string into tokens, each one
+/// `RE_TOKENS`'s group 1 or group 2 for that match (recovered by
+/// [`strip_junk`]).
 pub fn tokenize(address: &str) -> Vec<&str> {
     RE_TOKENS
         .find_iter(address)
