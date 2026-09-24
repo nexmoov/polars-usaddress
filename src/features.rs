@@ -12,13 +12,14 @@
 //! Getting any of this subtly wrong does not error; it silently degrades the
 //! parse, which is what the `tests/parity.rs` fixtures guard against.
 //!
-//! [`tokens_to_features`] builds the upstream-shaped `Vec<Attribute>`.
-//! [`tokens_to_id_features`] is the fast path `Parser::parse` actually
-//! calls -- same features, resolved straight to `(attr_id, weight)` pairs via
-//! `bounded_ids`, with the zero-weight ones dropped because they cannot change
-//! a score -- and is checked against `tokens_to_features` for exact
-//! equivalence in this module's tests.
+//! [`tokens_to_id_features`] is what `Parser` calls: the features resolved
+//! straight to `(attr_id, weight)` pairs via `bounded_ids`, with the
+//! zero-weight ones dropped because they cannot change a score.
+//! `tokens_to_features` (test-only) builds the upstream-shaped
+//! `Vec<Attribute>` instead; it is the reference the fast path is checked
+//! against for exact equivalence in this module's tests.
 
+#[cfg(test)]
 use crfs::Attribute;
 
 use crate::attr_cache;
@@ -39,7 +40,15 @@ pub(crate) enum DigitsClass {
 }
 
 impl DigitsClass {
-    fn as_str(self) -> &'static str {
+    /// Every class, in declaration order, so `ALL[class as usize] == class`
+    /// -- which is how `bounded_ids` indexes its `digits` table.
+    pub(crate) const ALL: [DigitsClass; 3] = [
+        DigitsClass::AllDigits,
+        DigitsClass::SomeDigits,
+        DigitsClass::NoDigits,
+    ];
+
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             DigitsClass::AllDigits => "all_digits",
             DigitsClass::SomeDigits => "some_digits",
@@ -161,7 +170,12 @@ pub fn token_features(token: &str) -> TokenFeatures {
     }
 }
 
-#[inline]
+// ------------------------------------------------ string-based reference path
+//
+// Test-only: the upstream-shaped encoding, kept as the obviously-correct
+// reference `tokens_to_id_features` is held to (see the tests below).
+
+#[cfg(test)]
 fn push_bool(out: &mut Vec<Attribute>, prefix: &str, key: &str, value: bool) {
     out.push(Attribute::new(
         format!("{prefix}{key}"),
@@ -169,11 +183,12 @@ fn push_bool(out: &mut Vec<Attribute>, prefix: &str, key: &str, value: bool) {
     ));
 }
 
-#[inline]
+#[cfg(test)]
 fn push_str(out: &mut Vec<Attribute>, prefix: &str, key: &str, value: &str) {
     out.push(Attribute::new(format!("{prefix}{key}:{value}"), 1.0));
 }
 
+#[cfg(test)]
 impl TokenFeatures {
     /// Emit this token's nine features with the given prefix (`""`, `"next:"`
     /// or `"previous:"`), in upstream's dict-insertion order.
@@ -209,7 +224,8 @@ impl TokenFeatures {
 ///
 /// * `previous:address.start` appears only at index 1
 /// * `next:address.end` appears only at index `n - 2`
-pub fn tokens_to_features(tokens: &[&str]) -> Vec<Vec<Attribute>> {
+#[cfg(test)]
+pub(crate) fn tokens_to_features(tokens: &[&str]) -> Vec<Vec<Attribute>> {
     let base: Vec<TokenFeatures> = tokens.iter().map(|t| token_features(t)).collect();
     let n = base.len();
 
@@ -266,7 +282,7 @@ fn push_present(out: &mut Vec<(u32, f64)>, id: Option<u32>) {
 /// through `attr_cache`'s full-vocabulary hash map.
 #[inline]
 fn push_slow(out: &mut Vec<(u32, f64)>, prefix: &str, key: &str, value: &str) {
-    if let Some(id) = crate::attr_cache::resolve_one(&format!("{prefix}{key}:{value}")) {
+    if let Some(id) = attr_cache::resolve_one(&format!("{prefix}{key}:{value}")) {
         out.push((id, 1.0));
     }
 }
@@ -281,10 +297,8 @@ impl TokenFeatures {
         let t = &bounded_ids::TABLES;
         let prefix = bounded_ids::PREFIXES[prefix_idx];
 
-        push_fixed(out, t.abbrev(prefix_idx), self.abbrev);
-
-        let class_idx = self.digits as usize;
-        push_present(out, t.digits_id(prefix_idx, class_idx));
+        push_fixed(out, t.abbrev[prefix_idx], self.abbrev);
+        push_present(out, t.digits[prefix_idx][self.digits as usize]);
 
         // `None` here is upstream's `False`: a zero-weight attribute, dropped
         // for the same reason as in `push_fixed`.
@@ -312,9 +326,9 @@ impl TokenFeatures {
             push_present(out, free.endsinpunc[prefix_idx]);
         }
 
-        push_fixed(out, t.directional(prefix_idx), self.directional);
-        push_fixed(out, t.street_name(prefix_idx), self.street_name);
-        push_fixed(out, t.has_vowels(prefix_idx), self.has_vowels);
+        push_fixed(out, t.directional[prefix_idx], self.directional);
+        push_fixed(out, t.street_name[prefix_idx], self.street_name);
+        push_fixed(out, t.has_vowels[prefix_idx], self.has_vowels);
     }
 }
 
@@ -461,8 +475,6 @@ mod tests {
     /// parity fixtures.
     #[test]
     fn id_features_match_string_features_exactly() {
-        use crate::attr_cache;
-
         #[derive(serde::Deserialize)]
         struct Case {
             input: String,
