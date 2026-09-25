@@ -1,6 +1,6 @@
 # polars-usaddress
 
-US address parsing for Polars — a Rust port of [DataMade's usaddress][usaddress],
+US address parsing for Polars, ported to Rust from [DataMade's usaddress][usaddress], and
 exposed as a native Polars plugin.
 
 The trained CRF model is the **unmodified** `usaddr.crfsuite` from the upstream
@@ -16,17 +16,12 @@ Credit to the fastaddress author for the performance work; this mostly adds the 
 ## How this was built
 
 This was built with extensive AI assistance (Claude), by someone fluent in
-Python and Polars, but novice to Rust. The parts in
-`src/` (tokenizing, feature extraction, the Polars glue) are things flansbreezy can
-walk through and explain. The CRF math itself — Viterbi decoding, forward-backward marginals,
-in `vendor/crfs` — is vendored, not authored, and honestly opaque to the devs the
-way most people's dependencies are: I don't understand crfsuite's internals,
+Python and Polars, but novice to Rust. After using Opus 5.5 to optimize the tokenizer and feature extraction,
+the main human behind the project (@flansbreezy) now struggles to understand the details of the codebase.
 
-The outputs are tested by:
-- Differential tests against real Python `usaddress`: golden vectors captured by `tools/gen_fixtures.py`
-  (hand-picked edge cases plus a 20k-address synthetic corpus), replayed through the Rust API in
-  `tests/parity.rs` and through the Polars plugin in `tests/test_plugin.py`
-- An exhaustive equivalence test between this crate's two feature-extraction paths (`id_features_match_string_features_exactly` in `src/features.rs`)
+However, the outputs are tested by differential tests against the real Python `usaddress`, unit tests are 
+written for the tokenizer and feature extraction, the plugin is tested at the Python level, and the
+library will ultimately only have a single, simple job: take a string and return a struct of labeled components.
 
 If something looks wrong, issues and contributions are very welcome.
 
