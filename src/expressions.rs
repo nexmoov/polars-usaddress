@@ -78,15 +78,36 @@ fn label_columns<R>(
         .collect()
 }
 
-/// Wrap one flat `inner` column into a list column, row `i` being
-/// `inner[offsets[i]..offsets[i + 1]]`, or null where `validity[i]` is false.
-/// Zero-copy over `inner`: one Arrow `ListArray<i64>` over its single chunk.
-fn list_column(inner: Series, offsets: Vec<i64>, validity: Vec<bool>) -> PolarsResult<Series> {
+/// Every token of every non-null row, in order: the flat values a list
+/// column's offsets index into.
+fn all_tokens<T>(rows: &[Option<Vec<T>>]) -> impl Iterator<Item = &T> {
+    rows.iter().flatten().flatten()
+}
+
+/// Wrap one flat `inner` column (built from [`all_tokens`]) into a list
+/// column with one entry per row of `rows`: that row's tokens, or null for a
+/// `None` row. Zero-copy over `inner`: one Arrow `ListArray<i64>` over its
+/// single chunk.
+fn list_column<T>(inner: Series, rows: &[Option<Vec<T>>]) -> PolarsResult<Series> {
+    let offsets: Vec<i64> = std::iter::once(0)
+        .chain(rows.iter().scan(0i64, |end, row| {
+            *end += row.as_ref().map_or(0, Vec::len) as i64;
+            Some(*end)
+        }))
+        .collect();
+    polars_ensure!(
+        offsets.last() == Some(&(inner.len() as i64)),
+        ComputeError: "list offsets don't cover the inner column"
+    );
+
     let dtype = DataType::List(Box::new(inner.dtype().clone()));
     let inner = inner.rechunk();
     let values = inner.chunks()[0].clone();
     let arrow_dtype = ListArray::<i64>::default_datatype(values.dtype().clone());
-    let validity = (!validity.iter().all(|v| *v)).then(|| Bitmap::from_iter(validity));
+    let validity = rows
+        .iter()
+        .any(Option::is_none)
+        .then(|| Bitmap::from_iter(rows.iter().map(Option::is_some)));
     let array = ListArray::<i64>::new(
         arrow_dtype,
         OffsetsBuffer::try_from(offsets)?,
@@ -101,19 +122,37 @@ fn list_column(inner: Series, offsets: Vec<i64>, validity: Vec<bool>) -> PolarsR
     Ok(ca.into_series())
 }
 
-fn label_fields() -> Vec<Field> {
+// ---------------------------------------------------------------- tag_address
+
+/// The struct fields both `tag_address*` expressions share: one per label,
+/// then `address_type`.
+fn tag_fields() -> Vec<Field> {
     LABELS
         .iter()
         .map(|name| Field::new((*name).into(), DataType::String))
+        .chain([Field::new("address_type".into(), DataType::String)])
         .collect()
 }
 
-// ---------------------------------------------------------------- tag_address
+/// The columns for [`tag_fields`], moving each row's components out.
+/// `split` gives a row's components and address type.
+fn tag_columns<R>(
+    rows: &mut [Option<R>],
+    split: impl Fn(&mut R) -> (&mut Components, &'static str),
+) -> Vec<Series> {
+    let mut columns = label_columns(rows, |r| split(r).0);
+    columns.push(
+        StringChunked::from_iter_options(
+            "address_type".into(),
+            rows.iter_mut().map(|row| row.as_mut().map(|r| split(r).1)),
+        )
+        .into_series(),
+    );
+    columns
+}
 
 fn tag_output(_: &[Field]) -> PolarsResult<Field> {
-    let mut fields = label_fields();
-    fields.push(Field::new("address_type".into(), DataType::String));
-    Ok(Field::new("address".into(), DataType::Struct(fields)))
+    Ok(Field::new("address".into(), DataType::Struct(tag_fields())))
 }
 
 /// Parse into one nullable string field per address component.
@@ -134,23 +173,14 @@ fn tag_address(inputs: &[Series]) -> PolarsResult<Series> {
         Err(e) => Err(polars_err!(ComputeError: "address tagging failed: {e}")),
     })?;
 
-    let mut fields = label_columns(&mut rows, |(components, _)| components);
-    fields.push(
-        StringChunked::from_iter_options(
-            "address_type".into(),
-            rows.iter().map(|row| row.as_ref().map(|(_, t)| *t)),
-        )
-        .into_series(),
-    );
-
+    let fields = tag_columns(&mut rows, |(components, t)| (components, *t));
     StructChunked::from_series("address".into(), ca.len(), fields.iter()).map(|ca| ca.into_series())
 }
 
 // ------------------------------------------------------- tag_address_with_confidence
 
 fn tag_confidence_output(_: &[Field]) -> PolarsResult<Field> {
-    let mut fields = label_fields();
-    fields.push(Field::new("address_type".into(), DataType::String));
+    let mut fields = tag_fields();
     fields.push(Field::new("sequence_confidence".into(), DataType::Float64));
     Ok(Field::new("address".into(), DataType::Struct(fields)))
 }
@@ -172,14 +202,7 @@ fn tag_address_with_confidence(inputs: &[Series]) -> PolarsResult<Series> {
         }
     })?;
 
-    let mut fields = label_columns(&mut rows, |(components, _, _)| components);
-    fields.push(
-        StringChunked::from_iter_options(
-            "address_type".into(),
-            rows.iter().map(|row| row.as_ref().map(|(_, t, _)| *t)),
-        )
-        .into_series(),
-    );
+    let mut fields = tag_columns(&mut rows, |(components, t, _)| (components, *t));
     fields.push(
         Float64Chunked::from_iter_options(
             "sequence_confidence".into(),
@@ -216,40 +239,23 @@ fn parse_address(inputs: &[Series]) -> PolarsResult<Series> {
             .map_err(|e| polars_err!(ComputeError: "address parsing failed: {e}"))
     })?;
 
-    // Flat token/label buffers plus per-row offsets, assembled into a
-    // ListChunked at the end -- no Series per row.
-    let mut tokens: Vec<String> = Vec::new();
-    let mut labels: Vec<&'static str> = Vec::new();
-    let mut offsets: Vec<i64> = Vec::with_capacity(ca.len() + 1);
-    let mut validity: Vec<bool> = Vec::with_capacity(ca.len());
-    offsets.push(0);
-
-    for row in parsed_rows {
-        match row {
-            None => validity.push(false),
-            Some(parsed) => {
-                for (t, l) in parsed {
-                    tokens.push(t);
-                    labels.push(l);
-                }
-                validity.push(true);
-            }
-        }
-        offsets.push(tokens.len() as i64);
-    }
-
+    // One flat column per struct field across all rows, then offsets over
+    // it -- no Series per row.
+    let tokens = || all_tokens(&parsed_rows);
     let inner = StructChunked::from_series(
         "".into(),
-        tokens.len(),
+        tokens().count(),
         [
-            StringChunked::from_iter_values("token".into(), tokens.into_iter()).into_series(),
-            StringChunked::from_iter_values("label".into(), labels.into_iter()).into_series(),
+            StringChunked::from_iter_values("token".into(), tokens().map(|(t, _)| t.as_str()))
+                .into_series(),
+            StringChunked::from_iter_values("label".into(), tokens().map(|(_, l)| *l))
+                .into_series(),
         ]
         .iter(),
     )?
     .into_series();
 
-    list_column(inner, offsets, validity)
+    list_column(inner, &parsed_rows)
 }
 
 // ------------------------------------------------------- parse_address_with_confidence
@@ -280,41 +286,22 @@ fn parse_address_with_confidence(inputs: &[Series]) -> PolarsResult<Series> {
             .map_err(|e| polars_err!(ComputeError: "address parsing failed: {e}"))
     })?;
 
-    // Same flat-buffers-plus-offsets shape as `parse_address`.
-    let mut tokens: Vec<String> = Vec::new();
-    let mut labels: Vec<&'static str> = Vec::new();
-    let mut confidences: Vec<f64> = Vec::new();
-    let mut offsets: Vec<i64> = Vec::with_capacity(ca.len() + 1);
-    let mut validity: Vec<bool> = Vec::with_capacity(ca.len());
-    offsets.push(0);
-
-    for row in parsed_rows {
-        match row {
-            None => validity.push(false),
-            Some(parsed) => {
-                for (t, l, c) in parsed {
-                    tokens.push(t);
-                    labels.push(l);
-                    confidences.push(c);
-                }
-                validity.push(true);
-            }
-        }
-        offsets.push(tokens.len() as i64);
-    }
-
+    // Same shape as `parse_address`, plus the confidence column.
+    let tokens = || all_tokens(&parsed_rows);
     let inner = StructChunked::from_series(
         "".into(),
-        tokens.len(),
+        tokens().count(),
         [
-            StringChunked::from_iter_values("token".into(), tokens.into_iter()).into_series(),
-            StringChunked::from_iter_values("label".into(), labels.into_iter()).into_series(),
-            Float64Chunked::from_iter_values("confidence".into(), confidences.into_iter())
+            StringChunked::from_iter_values("token".into(), tokens().map(|(t, _, _)| t.as_str()))
+                .into_series(),
+            StringChunked::from_iter_values("label".into(), tokens().map(|(_, l, _)| *l))
+                .into_series(),
+            Float64Chunked::from_iter_values("confidence".into(), tokens().map(|(_, _, c)| *c))
                 .into_series(),
         ]
         .iter(),
     )?
     .into_series();
 
-    list_column(inner, offsets, validity)
+    list_column(inner, &parsed_rows)
 }

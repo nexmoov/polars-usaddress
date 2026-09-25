@@ -1,16 +1,16 @@
 //! Diagnostic: how much of `Parser::tag`'s time is feature extraction vs. CRF
-//! tagging? Companion to `tools/benchmark.ipynb`'s Python-side split of the
-//! same question.
+//! tagging? Companion to the Python-side split of the same question in
+//! `tools/benchmark_tagging_python_vs_rust.ipynb`.
 //!
 //! ```text
 //! cargo run --release --no-default-features --features bench-timing --example bench_split
 //! ```
 //!
-//! By default this cycles the ~40 addresses in `tests/fixtures.json` out to a
-//! benchmark-sized corpus -- fine for a quick check, but not the same corpus
-//! `tools/benchmark.ipynb` uses, so totals aren't directly comparable to the
-//! notebook's numbers. Pass a JSON array of addresses as an argument (e.g.
-//! exported from the notebook) to compare apples-to-apples:
+//! By default this cycles the addresses in `tests/fixtures.json` out to a
+//! benchmark-sized corpus -- fine for a quick check, but not the notebook's
+//! corpus, so totals aren't directly comparable to its numbers. Pass a JSON
+//! array of addresses as an argument (e.g. exported from the notebook) to
+//! compare apples-to-apples:
 //!
 //! ```text
 //! cargo run --release --no-default-features --features bench-timing --example bench_split -- /path/to/corpus.json
@@ -31,7 +31,7 @@ struct Fixtures {
     fixtures: Vec<Case>,
 }
 
-/// Cycle the ~40 fixture addresses out to a benchmark-sized corpus. Only used
+/// Cycle the fixture addresses out to a benchmark-sized corpus. Only used
 /// when no corpus file is given on the command line.
 fn fallback_corpus(n: usize) -> Vec<String> {
     let fixtures: Fixtures =

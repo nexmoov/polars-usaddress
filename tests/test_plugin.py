@@ -1,12 +1,11 @@
-"""Differential tests against the golden vectors in `fixtures.json`, run
-through the actual compiled Polars plugin surface (`tag_address` /
-`parse_address`) rather than the plain Rust API that `tests/parity.rs`
-exercises.
+"""Differential tests against the golden vectors in `fixtures.json` and
+`corpus_fixtures.json`, run through the actual compiled Polars plugin
+surface (all four expressions) rather than the plain Rust API that
+`tests/parity.rs` exercises.
 
-This closes a coverage gap: `tests/parity.rs` calls `Parser::tag`/`parse`
-directly, which never goes through `src/expressions.rs`'s `LABELS`-driven
-struct-building code. Two real bugs lived there and had zero test coverage
-before this file:
+`tests/parity.rs` calls `Parser::tag`/`parse` directly, which never goes
+through `src/expressions.rs`'s `LABELS`-driven struct-building code, or
+the Python `LABELS` mirror. Two real bugs lived there before this file:
 
 * the tokenizer silently dropped a leading Unicode vulgar fraction ('½') as
   its own token (regex crate's `\\w` is narrower than Python's) -- covered
@@ -29,9 +28,8 @@ import json
 from pathlib import Path
 
 import polars as pl
-import pytest
-
 import polars_usaddress as plua
+import pytest
 
 FIXTURES = json.loads((Path(__file__).parent / "fixtures.json").read_text())["fixtures"]
 
@@ -43,7 +41,11 @@ def _case_id(case: dict) -> str:
 @pytest.mark.parametrize("case", FIXTURES, ids=_case_id)
 def test_tag_address_matches_fixture(case: dict) -> None:
     df = pl.DataFrame({"address": [case["input"]]})
-    row = df.select(plua.tag_address("address").alias("tagged")).unnest("tagged").row(0, named=True)
+    row = (
+        df.select(plua.tag_address("address").alias("tagged"))
+        .unnest("tagged")
+        .row(0, named=True)
+    )
 
     if case["repeated_label_error"]:
         assert row["address_type"] is None
@@ -52,7 +54,9 @@ def test_tag_address_matches_fixture(case: dict) -> None:
 
     got = {k: v for k, v in row.items() if k != "address_type" and v is not None}
     assert got == case["tag"], f"components for {case['input']!r}"
-    assert row["address_type"] == case["address_type"], f"address_type for {case['input']!r}"
+    assert row["address_type"] == case["address_type"], (
+        f"address_type for {case['input']!r}"
+    )
 
 
 @pytest.mark.parametrize("case", FIXTURES, ids=_case_id)
@@ -64,7 +68,9 @@ def test_parse_address_matches_fixture(case: dict) -> None:
     assert got == want, f"parse for {case['input']!r}"
 
 
-CORPUS = json.loads((Path(__file__).parent / "corpus_fixtures.json").read_text())["fixtures"]
+CORPUS = json.loads((Path(__file__).parent / "corpus_fixtures.json").read_text())[
+    "fixtures"
+]
 
 
 def test_corpus_tag_address_matches_upstream() -> None:
@@ -102,7 +108,9 @@ def test_corpus_parse_address_matches_upstream() -> None:
 
 def test_leading_fraction_is_not_dropped() -> None:
     df = pl.DataFrame({"address": ["½ Main St"]})
-    row = df.select(plua.tag_address("address").alias("t")).unnest("t").row(0, named=True)
+    row = (
+        df.select(plua.tag_address("address").alias("t")).unnest("t").row(0, named=True)
+    )
     assert row["AddressNumber"] == "½"
     assert row["StreetName"] == "Main"
     assert row["StreetNamePostType"] == "St"
@@ -125,5 +133,57 @@ def test_labels_missing_from_upstream_usaddress_LABELS_are_not_dropped(
     address: str, field: str, expected: str
 ) -> None:
     df = pl.DataFrame({"address": [address]})
-    row = df.select(plua.tag_address("address").alias("t")).unnest("t").row(0, named=True)
+    row = (
+        df.select(plua.tag_address("address").alias("t")).unnest("t").row(0, named=True)
+    )
     assert row[field] == expected
+
+
+# The Python `LABELS` / `UPSTREAM_VERSION` constants are hand-kept copies of
+# the Rust ones; these fail if the two sides drift.
+
+
+def test_python_labels_match_the_plugin_schema() -> None:
+    schema = pl.DataFrame({"address": ["x"]}).select(plua.tag_address("address")).schema
+    fields = [f.name for f in schema["address"].fields]
+    assert fields == [*plua.LABELS, "address_type"]
+
+
+def test_python_upstream_version_matches_the_fixtures() -> None:
+    fixtures = json.loads((Path(__file__).parent / "fixtures.json").read_text())
+    assert plua.UPSTREAM_VERSION == fixtures["usaddress_version"]
+
+
+# The `_with_confidence` variants must decode exactly what their plain
+# counterparts do; confidence is extra output, not a different parse.
+
+CONFIDENCE_SAMPLE = [c["input"] for c in CORPUS[:2_000]] + [
+    c["input"] for c in FIXTURES
+]
+
+
+def test_tag_address_with_confidence_matches_tag_address() -> None:
+    df = pl.DataFrame({"address": CONFIDENCE_SAMPLE})
+    plain = df.select(plua.tag_address("address").alias("t")).unnest("t")
+    confident = df.select(
+        plua.tag_address_with_confidence("address").alias("t")
+    ).unnest("t")
+
+    assert confident.drop("sequence_confidence").equals(plain)
+    conf = confident["sequence_confidence"]
+    assert conf.is_null().equals(plain["address_type"].is_null())
+    assert conf.drop_nulls().is_between(0.0, 1.0).all()
+
+
+def test_parse_address_with_confidence_matches_parse_address() -> None:
+    df = pl.DataFrame({"address": CONFIDENCE_SAMPLE})
+    plain = df.select(plua.parse_address("address")).to_series().to_list()
+    confident = (
+        df.select(plua.parse_address_with_confidence("address")).to_series().to_list()
+    )
+
+    for addr, p, c in zip(CONFIDENCE_SAMPLE, plain, confident, strict=True):
+        assert [(r["token"], r["label"]) for r in c] == [
+            (r["token"], r["label"]) for r in p
+        ], addr
+        assert all(0.0 <= r["confidence"] <= 1.0 for r in c), addr

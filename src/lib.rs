@@ -243,16 +243,32 @@ impl Parser {
         (tokens, label_ids)
     }
 
+    /// [`Parser::label`] plus forward-backward marginals; `None` for an
+    /// address with no tokens.
+    fn label_with_marginals<'a>(
+        &mut self,
+        normalised: &'a str,
+    ) -> (Vec<&'a str>, Option<crfs::TagMarginals>) {
+        let tokens = tokenize::tokenize(normalised);
+        if tokens.is_empty() {
+            return (tokens, None);
+        }
+        let id_seq = features::tokens_to_id_features(&tokens);
+        let marginals = self.tagger.tag_ids_with_marginals(&id_seq);
+        (tokens, Some(marginals))
+    }
+
     /// Low-level parse: one label per token, in order. Mirrors `usaddress.parse`.
     pub fn parse(&mut self, address: &str) -> Result<Vec<(String, String)>, Error> {
-        let normalised = tokenize::normalize(address);
-        let (tokens, label_ids) = self.label(&normalised);
-        Ok(labelled_pairs(&tokens, &label_ids))
+        Ok(self
+            .parse_static(address)?
+            .into_iter()
+            .map(|(t, l)| (t, l.to_string()))
+            .collect())
     }
 
     /// [`Parser::parse`] with each label as a `&'static str` pointing into the
     /// embedded model, so the plugin doesn't allocate one `String` per label.
-    #[cfg(feature = "polars-plugin")]
     pub(crate) fn parse_static(
         &mut self,
         address: &str,
@@ -304,13 +320,9 @@ impl Parser {
         address: &str,
     ) -> Result<Vec<(String, &'static str, f64)>, Error> {
         let normalised = tokenize::normalize(address);
-        let tokens = tokenize::tokenize(&normalised);
-        if tokens.is_empty() {
+        let (tokens, Some(marginals)) = self.label_with_marginals(&normalised) else {
             return Ok(Vec::new());
-        }
-
-        let id_seq = features::tokens_to_id_features(&tokens);
-        let marginals = self.tagger.tag_ids_with_marginals(&id_seq);
+        };
 
         Ok(tokens
             .iter()
@@ -346,14 +358,11 @@ impl Parser {
         address: &str,
     ) -> Result<(Components, AddressType, f64), Error> {
         let normalised = tokenize::normalize(address);
-        let tokens = tokenize::tokenize(&normalised);
-        if tokens.is_empty() {
+        let (tokens, marginals) = self.label_with_marginals(&normalised);
+        let Some(marginals) = marginals else {
             let (components, address_type) = collapse(&[], &[])?;
             return Ok((components, address_type, 1.0));
-        }
-
-        let id_seq = features::tokens_to_id_features(&tokens);
-        let marginals = self.tagger.tag_ids_with_marginals(&id_seq);
+        };
         let (components, address_type) = collapse(&tokens, &marginals.labels)?;
         Ok((components, address_type, marginals.sequence_probability()))
     }

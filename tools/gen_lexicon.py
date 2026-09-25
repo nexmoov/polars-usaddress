@@ -8,6 +8,7 @@ src/lib.rs to match):
 Then diff and review before committing. A no-op upgrade should produce a
 no-op diff, since both sets are sorted before being written out.
 """
+
 from importlib.metadata import version
 from pathlib import Path
 
@@ -35,7 +36,9 @@ sections = [
     phf_set("DIRECTIONS", usaddress.DIRECTIONS),
     phf_set("STREET_NAMES", usaddress.STREET_NAMES),
 ]
-LEXICON_PATH.write_text(HEADER.format(version=usaddress_version) + "\n" + "\n".join(sections))
+LEXICON_PATH.write_text(
+    HEADER.format(version=usaddress_version) + "\n" + "\n".join(sections)
+)
 
 print(
     f"wrote {LEXICON_PATH.relative_to(LEXICON_PATH.resolve().parent.parent)} "

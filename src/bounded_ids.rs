@@ -9,6 +9,7 @@
 use std::sync::LazyLock;
 
 use crate::MODEL;
+use crate::features::DigitsClass;
 
 /// "own" (index 0), "previous:" (1), "next:" (2) -- the three viewpoints
 /// `TokenFeatures::encode_into`/`encode_ids_into` emit from.
@@ -21,19 +22,23 @@ const MAX_LENGTH: usize = 48;
 /// Longest run of trailing zeros the table covers, same reasoning.
 const MAX_TRAILING_ZEROS: usize = 24;
 
-fn id(name: String) -> Option<u32> {
-    MODEL.to_attr_id(&name)
+fn id(name: &str) -> Option<u32> {
+    MODEL.to_attr_id(name)
 }
 
+/// Every `[Option<u32>; 3]` / outer `[_; 3]` below is indexed by viewpoint,
+/// like [`PREFIXES`]. An inner `None` means the model never saw that
+/// attribute in training, so it contributes nothing and isn't emitted.
 pub(crate) struct BoundedIds {
-    abbrev: [Option<u32>; 3],
-    directional: [Option<u32>; 3],
-    street_name: [Option<u32>; 3],
-    has_vowels: [Option<u32>; 3],
+    pub(crate) abbrev: [Option<u32>; 3],
+    pub(crate) directional: [Option<u32>; 3],
+    pub(crate) street_name: [Option<u32>; 3],
+    pub(crate) has_vowels: [Option<u32>; 3],
     // No entries for `word`/`trailing.zeros`/`endsinpunc`'s `False` branch:
     // those are zero-weight and the fast path never emits them.
-    /// `[prefix][digits_class]` (0=all_digits, 1=some_digits, 2=no_digits).
-    digits: [[Option<u32>; 3]; 3],
+    /// `[prefix][digits_class as usize]`, see `DigitsClass::ALL`. Always in
+    /// range: there are exactly three classes.
+    pub(crate) digits: [[Option<u32>; 3]; 3],
     /// `[prefix][is_word as usize][count]`. Outer `Option` (via `.get`)
     /// means "out of range, use the slow path"; inner `Option` means "in
     /// range, but never seen in training" -- see `length_id`.
@@ -48,23 +53,22 @@ pub(crate) struct BoundedIds {
 
 pub(crate) static TABLES: LazyLock<BoundedIds> = LazyLock::new(|| {
     let fixed = |key: &str| -> [Option<u32>; 3] {
-        std::array::from_fn(|p| id(format!("{}{key}", PREFIXES[p])))
+        std::array::from_fn(|p| id(&format!("{}{key}", PREFIXES[p])))
     };
-    const CLASSES: [&str; 3] = ["all_digits", "some_digits", "no_digits"];
     let digits: [[Option<u32>; 3]; 3] = std::array::from_fn(|p| {
-        std::array::from_fn(|c| id(format!("{}digits:{}", PREFIXES[p], CLASSES[c])))
+        DigitsClass::ALL.map(|class| id(&format!("{}digits:{}", PREFIXES[p], class.as_str())))
     });
     let length: [[Vec<Option<u32>>; 2]; 3] = std::array::from_fn(|p| {
         let for_type = |type_char: char| -> Vec<Option<u32>> {
             (0..=MAX_LENGTH)
-                .map(|n| id(format!("{}length:{type_char}:{n}", PREFIXES[p])))
+                .map(|n| id(&format!("{}length:{type_char}:{n}", PREFIXES[p])))
                 .collect()
         };
         [for_type('d'), for_type('w')]
     });
     let trailing_zeros_some: [Vec<Option<u32>>; 3] = std::array::from_fn(|p| {
         (0..=MAX_TRAILING_ZEROS)
-            .map(|n| id(format!("{}trailing.zeros:{}", PREFIXES[p], "0".repeat(n))))
+            .map(|n| id(&format!("{}trailing.zeros:{}", PREFIXES[p], "0".repeat(n))))
             .collect()
     });
     BoundedIds {
@@ -75,39 +79,14 @@ pub(crate) static TABLES: LazyLock<BoundedIds> = LazyLock::new(|| {
         digits,
         length,
         trailing_zeros_some,
-        address_start: id("address.start".to_string()),
-        previous_address_start: id("previous:address.start".to_string()),
-        address_end: id("address.end".to_string()),
-        next_address_end: id("next:address.end".to_string()),
+        address_start: id("address.start"),
+        previous_address_start: id("previous:address.start"),
+        address_end: id("address.end"),
+        next_address_end: id("next:address.end"),
     }
 });
 
 impl BoundedIds {
-    #[inline]
-    pub(crate) fn abbrev(&self, prefix: usize) -> Option<u32> {
-        self.abbrev[prefix]
-    }
-    #[inline]
-    pub(crate) fn directional(&self, prefix: usize) -> Option<u32> {
-        self.directional[prefix]
-    }
-    #[inline]
-    pub(crate) fn street_name(&self, prefix: usize) -> Option<u32> {
-        self.street_name[prefix]
-    }
-    #[inline]
-    pub(crate) fn has_vowels(&self, prefix: usize) -> Option<u32> {
-        self.has_vowels[prefix]
-    }
-
-    /// Digits classes are fully enumerable (always exactly one of three), so
-    /// unlike `length_id`/`trailing_zeros_some_id` there is no "out of
-    /// range" case.
-    #[inline]
-    pub(crate) fn digits_id(&self, prefix: usize, class_idx: usize) -> Option<u32> {
-        self.digits[prefix][class_idx]
-    }
-
     /// `None` -> out of range, caller must fall back to the slow path.
     /// `Some(inner)` -> in range; `inner` is the (possibly absent) id.
     #[inline]

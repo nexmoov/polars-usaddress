@@ -6,6 +6,16 @@ test:
 	@# tests/model.crfsuite, which wasn't vendored.
 	cargo test --manifest-path vendor/crfs/Cargo.toml --release context::
 
+.PHONY: bench
+bench: ## Per-core throughput vs. Python usaddress (tools/bench_per_core.py)
+	@# Build both things the script measures, in release, from the current source:
+	@# the plugin, and the plain-Rust loop. The loop is built *without*
+	@# bench-timing, whose per-row timers would inflate its total. --no-sync so uv
+	@# doesn't reinstall the project over the plugin maturin just built.
+	uv run maturin develop --release
+	cargo build --release --no-default-features --example bench_split
+	uv run --no-sync python tools/bench_per_core.py
+
 .PHONY: format
 format: ## Format the code
 	$(info --- Rust format ---)
@@ -18,20 +28,8 @@ format: ## Format the code
 .PHONY: check-rust
 check-rust: ## Run check on Rust
 	$(info --- Check Rust clippy ---)
-	@# --all-targets so functions only reachable from #[cfg(test)] (the string-based
-	@# reference path our tests hold the fast path accountable to) don't get flagged as
-	@# dead code by a plain, tests-blind `cargo clippy`.
-	@#
-	@# vendor/crfs is vendored upstream source we deliberately don't hand-edit (see
-	@# vendor/crfs/VENDORED.md); it carries training-side API our port never calls, so
-	@# its warnings are expected. Filtered from the printed output, but the real cargo
-	@# clippy exit status is still what this target returns -- a genuine failure in our
-	@# own code still fails the build.
-	@log=$$(mktemp); \
-	cargo clippy --all-targets --all-features >"$$log" 2>&1; \
-	status=$$?; \
-	grep -v '/vendor/crfs/' "$$log" || true; \
-	rm -f "$$log"; \
-	exit $$status
+	@# --all-targets so tests and examples are linted too, not just the library.
+	@# vendor/crfs's dead-code warnings are silenced in its own Cargo.toml.
+	cargo clippy --all-targets --all-features
 	$(info --- Check Rust format ---)
 	cargo fmt -- --check

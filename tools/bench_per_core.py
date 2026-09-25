@@ -4,12 +4,13 @@ The go/no-go number for this crate is the *per-core* ratio: single-threaded
 Rust against single-core Python. The all-core number is reported too, but it
 mostly measures how many cores the machine has.
 
-    uv run maturin develop -r
-    cargo build --release --no-default-features --example bench_split
-    uv run python tools/bench_per_core.py
+    make bench
 
-Each plugin measurement runs in a fresh subprocess, because Rayon sizes its
-global pool once, at first use, from RAYON_NUM_THREADS.
+which builds both things it measures in release mode first. Exits non-zero
+if the sanity checks below think the numbers can't be trusted.
+
+Each plugin measurement runs in a fresh subprocess, because the plugin sizes
+its thread pool once, at first use, from POLARS_MAX_THREADS.
 """
 
 from __future__ import annotations
@@ -25,17 +26,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = ROOT / "tests" / "corpus_fixtures.json"
-FALLBACK = ROOT / "tools" / "bench_corpus.json"
+BENCH_SPLIT = ROOT / "target" / "release" / "examples" / "bench_split"
 REPEATS = 5
 
 
 def corpus() -> list[str]:
-    if FIXTURES.exists():
-        return [c["input"] for c in json.loads(FIXTURES.read_text())["fixtures"]]
-    return json.loads(FALLBACK.read_text())
+    return [c["input"] for c in json.loads(FIXTURES.read_text())["fixtures"]]
 
 
-def best_of(fn, repeats: int = REPEATS) -> float:
+def median_time(fn, repeats: int = REPEATS) -> float:
     """Median wall time of `repeats` runs, after one warm-up."""
     fn()
     times = []
@@ -56,18 +55,17 @@ def python_usaddress(addresses: list[str]) -> float:
             except usaddress.RepeatedLabelError:
                 pass
 
-    return best_of(run, repeats=3)
+    return median_time(run, repeats=3)
 
 
 def plugin_child(fn_name: str) -> None:
     """Runs inside the subprocess: time one plugin function on the corpus."""
     import polars as pl
-
     import polars_usaddress as plua
 
     df = pl.DataFrame({"address": corpus()})
     expr = getattr(plua, fn_name)("address")
-    print(best_of(lambda: df.select(expr)))
+    print(median_time(lambda: df.select(expr)))
 
 
 def plugin(fn_name: str, threads: int | None) -> float:
@@ -88,9 +86,6 @@ def plugin(fn_name: str, threads: int | None) -> float:
     return float(out.stdout.strip().splitlines()[-1])
 
 
-BENCH_SPLIT = ROOT / "target" / "release" / "examples" / "bench_split"
-
-
 def plugin_library() -> Path | None:
     """The compiled plugin the child processes will load, found without importing it."""
     spec = importlib.util.find_spec("polars_usaddress")
@@ -106,7 +101,9 @@ def newest_source_mtime() -> float:
     return max(p.stat().st_mtime for p in sources if p.exists())
 
 
-def sanity_warnings(rust: float | None, plugin_1t: float, artifacts: dict[str, Path | None]) -> list[str]:
+def sanity_warnings(
+    rust: float | None, plugin_1t: float, artifacts: dict[str, Path | None]
+) -> list[str]:
     """Catch the two ways this benchmark has produced wrong numbers before:
     a debug build of the plugin, and a build older than the source."""
     warnings = []
@@ -114,24 +111,32 @@ def sanity_warnings(rust: float | None, plugin_1t: float, artifacts: dict[str, P
     if rust is not None and plugin_1t > 3 * rust:
         warnings.append(
             f"plugin tag_address on 1 thread is {plugin_1t / rust:.1f}x slower than the Rust "
-            "loop running the same parser. It is almost certainly a debug build: rebuild with "
-            "`uv run maturin develop -r`."
+            "loop running the same parser. It is almost certainly a debug build: `make bench` "
+            "rebuilds it in release."
         )
     newest = newest_source_mtime()
     for name, path in artifacts.items():
         if path is not None and path.stat().st_mtime < newest:
-            warnings.append(f"{name} ({path.relative_to(ROOT)}) is older than the Rust source; rebuild it.")
+            warnings.append(
+                f"{name} ({path.relative_to(ROOT)}) is older than the Rust source; rebuild it."
+            )
     return warnings
 
 
 def rust_parser_loop(path: Path) -> float | None:
     """Plain `Parser::tag` loop, single thread, no Polars. Needs bench_split built."""
-    exe = BENCH_SPLIT
-    if not exe.exists():
+    if not BENCH_SPLIT.exists():
         return None
     runs = []
     for _ in range(REPEATS):
-        out = subprocess.run([exe, path], check=True, capture_output=True, text=True).stdout
+        out = subprocess.run(
+            [BENCH_SPLIT, path], check=True, capture_output=True, text=True
+        ).stdout
+        if "feature extraction:" in out:
+            sys.exit(
+                f"{BENCH_SPLIT.relative_to(ROOT)} was built with --features bench-timing, whose "
+                "per-row timers inflate the total. Rebuild it without: `make bench` does."
+            )
         line = next(l for l in out.splitlines() if l.startswith("total:"))
         runs.append(float(line.split()[1]) / 1e3)
     return statistics.median(runs)
@@ -166,13 +171,13 @@ def main() -> None:
     warnings = sanity_warnings(rust, plugin_1t, artifacts)
     if rust is None:
         warnings.append(
-            "no Rust loop row: build it with "
-            "`cargo build --release --no-default-features --example bench_split`."
+            "no Rust loop row: bench_split isn't built; `make bench` builds it."
         )
     for w in warnings:
         print(f"\n*** WARNING: {w}", file=sys.stderr)
     if warnings:
         print("\n*** These numbers are probably not trustworthy.", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
